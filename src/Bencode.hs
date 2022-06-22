@@ -1,24 +1,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ViewPatterns #-}
-module Bencode where
+module Bencode (encode, decode, Dict, Bencode (..) ) where
 
-import qualified Data.Text as T
+
+import qualified Data.ByteString.Char8 as B
 import Data.Char (isDigit)
 import qualified Data.Map as M
 
 
-type Dict = M.Map T.Text Bencode
+type Dict = M.Map B.ByteString Bencode
 
 type ErrorMessage = String
 type Result = Either ErrorMessage
 
-data Bencode = L [Bencode] | I Integer | D Dict | S T.Text
+data Bencode = L [Bencode] | I Integer | D Dict | S B.ByteString
   deriving (Eq, Show)
 
 
-encode :: Bencode -> T.Text
-encode (I int) = "i" <> (T.pack . show) int <> "e"
-encode (S str) = (T.pack . show . T.length) str <> ":" <> str
+encode :: Bencode -> B.ByteString
+encode (I int) = "i" <> (B.pack . show) int <> "e"
+encode (S str) = (B.pack . show . B.length) str <> ":" <> str
 encode (L list) = "l" <> mconcat (map encode list) <> "e"
 encode (D dict) = "d" <> mconcat (map
                                    (\(key, value) ->
@@ -27,27 +28,27 @@ encode (D dict) = "d" <> mconcat (map
                   
 
 
-decode :: T.Text -> Result (Bencode, T.Text)
-decode (T.uncons -> Nothing)  = Left "Empty String"
-decode raw@(T.uncons -> Just (x, xs)) 
+decode :: B.ByteString -> Result (Bencode, B.ByteString)
+decode (B.uncons -> Nothing)  = Left "Empty String"
+decode raw@(B.uncons -> Just (x, xs)) 
   | x == 'i' = 
     if xs == "" then
       Left "Unclosed Int"
     else
-      let (int, rest) = T.break (== 'e') xs in
-        if T.null rest then
+      let (int, rest) = B.break (== 'e') xs in
+        if B.null rest then
           Left "Unclosed Int"
-        else if T.any (not . isDigit) (T.tail int) ||
-                T.head int /= '-' && not (isDigit (T.head int))
+        else if B.any (not . isDigit) (B.tail int) ||
+                B.head int /= '-' && not (isDigit (B.head int))
              then             
           Left "Error, only digits and heading '-' allowed in int"
         else
-          return (I $ read $ T.unpack int, T.tail rest)
+          return (I $ read $ B.unpack int, B.tail rest)
 
   | x == 'l' = let
-      extract :: T.Text -> Result ([Bencode], T.Text)
-      extract (T.uncons -> Nothing)  = Left "List is not closed"
-      extract (T.uncons -> Just ('e', xs)) = return ([], xs)
+      extract :: B.ByteString -> Result ([Bencode], B.ByteString)
+      extract (B.uncons -> Nothing)  = Left "List is not closed"
+      extract (B.uncons -> Just ('e', xs)) = return ([], xs)
       extract xs = do
         (value, rest') <- decode xs
         (list, rest) <- extract rest'
@@ -59,9 +60,9 @@ decode raw@(T.uncons -> Just (x, xs))
 
 
   | x == 'd' = let
-      extract :: T.Text -> Result ([(T.Text, Bencode)], T.Text)
-      extract (T.uncons -> Nothing) = Left "Dict is not closed"
-      extract (T.uncons -> Just ('e', xs)) = return ([], xs)
+      extract :: B.ByteString -> Result ([(B.ByteString, Bencode)], B.ByteString)
+      extract (B.uncons -> Nothing) = Left "Dict is not closed"
+      extract (B.uncons -> Just ('e', xs)) = return ([], xs)
       extract xs = do
         (key, rest'') <- decode xs
         (value, rest') <- decode rest''
@@ -77,16 +78,16 @@ decode raw@(T.uncons -> Just (x, xs))
   
 
   | isDigit x = let
-      (len', rest') = T.break (== ':') raw
-      len = read (T.unpack len')
-      rest = T.tail rest'
+      (len', rest') = B.break (== ':') raw
+      len = read (B.unpack len')
+      rest = B.tail rest'
     in      
-      if T.any (not . isDigit) len' then
+      if B.any (not . isDigit) len' then
         Left "Incorrect string length or missing ':'"
-      else if T.null rest' || T.length rest < len then
+      else if B.null rest' || B.length rest < len then
         Left "Incorrect, string are too short "
       else
-        return $ (S $ T.take len rest, T.drop len rest)
+        return $ (S $ B.take len rest, B.drop len rest)
      
 decode _ = Left "Incorrect bencode"      
     

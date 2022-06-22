@@ -1,6 +1,14 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module Main where
 
-import Lib
+import qualified Data.ByteString as B
+import Data.Map (toList)
+import Torrent
+  
 
 main :: IO ()
-main = someFunc
+main = do
+  torrent <- parse <$> B.readFile "test1.torrent"
+  print torrent
+  

@@ -27,6 +27,7 @@ library
   exposed-modules:
       Bencode
       Lib
+      Torrent
   other-modules:
       Paths_hbittorrent
   hs-source-dirs:
