@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Torrent where
+module Torrent (parse, Torrent (..))  where
 
 import Bencode
 import qualified Data.Map as M
@@ -13,6 +13,8 @@ type Result = Either ErrorMessage
 
 type Path = [T.Text]
 
+data File = File { path :: Path, length :: Integer } deriving (Eq, Show)
+data Fs = SingleFile File | Files [File] deriving (Eq, Show)
 
 data Torrent = Torrent
   { announce :: T.Text
@@ -21,18 +23,15 @@ data Torrent = Torrent
   , fs :: Fs } deriving Eq
 
 
+
 instance Show Torrent where
-    
-  show (Torrent announce piece_length pieces fs) = 
+  show (Torrent announce piece_length pieces fs) =
+    "Torrent {\n" <>
     "announce: " <> show announce <>
     "\npiece length: " <> show piece_length  <>
     "\nnumber of pieces: " <> (show (Prelude.length pieces)) <>
-    "\nfiles: " <> show fs 
+    "\nfiles: " <> show fs <> "\n}"
                             
-
-
-data File = File { path :: Path, length :: Integer } deriving (Eq, Show)
-data Fs = SingleFile File | Files [File] deriving (Eq, Show)
 
 
 lookup' :: (Show k, Ord k) => k -> M.Map k v -> Result v
