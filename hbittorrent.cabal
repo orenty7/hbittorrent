@@ -37,6 +37,9 @@ library
       base >=4.7 && <5
     , bytestring
     , containers
+    , directory
+    , filepath
+    , network
     , text
   default-language: Haskell2010
 
@@ -51,7 +54,10 @@ executable hbittorrent-exe
       base >=4.7 && <5
     , bytestring
     , containers
+    , directory
+    , filepath
     , hbittorrent
+    , network
     , text
   default-language: Haskell2010
 
@@ -67,6 +73,9 @@ test-suite hbittorrent-test
       base >=4.7 && <5
     , bytestring
     , containers
+    , directory
+    , filepath
     , hbittorrent
+    , network
     , text
   default-language: Haskell2010

@@ -24,7 +24,9 @@ dependencies:
 - bytestring
 - containers
 - text
-
+- network
+- directory
+- filepath
 library:
   source-dirs: src
 

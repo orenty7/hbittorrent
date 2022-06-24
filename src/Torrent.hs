@@ -1,6 +1,11 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Torrent (parse, Torrent (..))  where
+module Torrent (parse,
+                Path,
+                File (..),
+                FS (..),                
+                Torrent (..))  where
+
 
 import Bencode
 import qualified Data.Map as M
@@ -12,26 +17,16 @@ type ErrorMessage = String
 type Result = Either ErrorMessage
 
 type Path = [T.Text]
-
+  
 data File = File { path :: Path, length :: Integer } deriving (Eq, Show)
-data Fs = SingleFile File | Files [File] deriving (Eq, Show)
+data FS = SingleFile File | Files { files :: [File], dirname :: T.Text } deriving (Eq, Show)
 
 data Torrent = Torrent
   { announce :: T.Text
   , piece_length :: Integer
   , pieces :: [B.ByteString]
-  , fs :: Fs } deriving Eq
+  , fs :: FS } deriving (Eq, Show)
 
-
-
-instance Show Torrent where
-  show (Torrent announce piece_length pieces fs) =
-    "Torrent {\n" <>
-    "announce: " <> show announce <>
-    "\npiece length: " <> show piece_length  <>
-    "\nnumber of pieces: " <> (show (Prelude.length pieces)) <>
-    "\nfiles: " <> show fs <> "\n}"
-                            
 
 
 lookup' :: (Show k, Ord k) => k -> M.Map k v -> Result v
@@ -43,6 +38,8 @@ lookup' key dict = case M.lookup key dict of
 chunk :: Int -> B.ByteString -> [B.ByteString]
 chunk n ""  = []
 chunk n str = (B.take n str):chunk n (B.drop n str)
+
+
 
 i :: Bencode -> Result Integer
 i (I int) = return int
@@ -65,14 +62,17 @@ t str = case decodeUtf8' str of
           Right text -> return text
           Left err -> Left $ "Unicode Error: " <> show err
 
+
+ls :: Bencode -> Result [B.ByteString]
+ls raw = l raw >>= traverse s
+
+
 file :: Dict -> Result File
 file raw = do
   len  <- lookup' "length" raw >>= i
   path <- lookup' "path"   raw >>= ls >>= traverse t
   return $ File path len
 
-ls :: Bencode -> Result [B.ByteString]
-ls raw = l raw >>= traverse s
 
 parse :: B.ByteString -> Result Torrent
 parse text = do
@@ -86,14 +86,17 @@ parse text = do
   pieces       <- lookup' "pieces"       info >>= s >>= return.chunk 20
 
   fs <- case M.lookup "files" info of      
-          Just list -> Files <$> (((l list) >>= (traverse d)) >>= (mapM file))
-          Nothing -> SingleFile <$> file info
-        
-  return $ Torrent
-    announce
-    piece_length
-    pieces
-    fs
-  
+          Just list -> do
+            files <-  (l list) >>= (traverse d) >>= (mapM file)                        
+            dir <- lookup' "name" info >>= s >>= t
 
+            return $ Files files dir
+            
+          Nothing -> do
+            len <- lookup' "length" info >>= i
+            path <- lookup' "name" info >>= s >>= t
+
+            return $ SingleFile $ File [path] len
+        
+  return $ Torrent announce piece_length pieces fs
   
