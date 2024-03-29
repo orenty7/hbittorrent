@@ -1,178 +1,123 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE Strict #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
 module Main (main) where
 
 import Bencode
+-- import Network.Socket
+-- import Network.Socket.ByteString
+
 import Control.Concurrent
-import Control.Exception
+-- import Loader
+
+import Control.Concurrent.STM
 import Control.Lens
 import Control.Monad
-import Control.Monad.IO.Class
+import Control.Monad.State
 import qualified Crypto.Hash.SHA1 as SHA1
-import Data.ByteString as B
-import Data.ByteString.UTF8 (fromString)
+import qualified Data.ByteString as B
 import Data.IORef
-import Data.Text as T
-import Network.HTTP.Client (Request)
-import Network.HTTP.Req
-import System.IO
-import System.Random (randomRIO)
+import Data.Map as M
+import Data.Set as S
+import qualified Data.Text as T
+import Data.Word
+import Loader
+import Loader (convert)
+import Network.Simple.TCP
+import Peer
+import SocketParser
+import qualified System.IO as IO
+import Text.URI
 import Torrent
+import Tracker
 import Prelude as P
 
 test :: IO (Maybe Torrent)
 test = do
-  bstr <- B.readFile "archlinux-2024.01.01-x86_64.iso.torrent"
+  bstr <- B.readFile "debian-12.4.0-amd64-DVD-1.iso.torrent"
 
   return $ do
     bencode <- parse bstr
     mkTorrent bencode
 
-addRangeHeaders :: (Monad m) => Integer -> Integer -> Request -> m Request
-addRangeHeaders start end request = do
-  let name = "Range"
-  let value = "bytes=" <> fromString (show start) <> "-" <> fromString (show end)
-
-  return $ attachHeader name value request
-
-readPiece :: QSem -> Handle -> Integer -> Integer -> IO ByteString
-readPiece lock handle pieceLength index = do
-  waitQSem lock
-  hSeek handle AbsoluteSeek $ index * pieceLength
-  bstr <- B.hGetSome handle (fromInteger pieceLength)
-  signalQSem lock
-
-  return bstr
-
-writePiece :: QSem -> Handle -> Integer -> Integer -> ByteString -> IO ()
-writePiece lock handle pieceLength index piece = do
-  waitQSem lock
-  hSeek handle AbsoluteSeek $ index * pieceLength
-  B.hPut handle piece
-  hFlush handle
-  signalQSem lock
-
 main :: IO ()
 main = do
   (Just torrent) <- test
 
-  handle <- openFile "archlinux.iso" ReadWriteMode
-
-  logLock <- newQSem 1
-  ioLock <- newQSem 1
-  loadState <- newMVar (P.replicate (P.length $ torrent ^. pieces) 0)
-  finishedPiecesCounter <- newMVar 0
-
-  piecesToLoad <- newChan
-  finishedLock <- newEmptyMVar
-
-  let indexedPieces = P.zip [0 ..] (torrent ^. pieces)
-  forM_ indexedPieces (writeChan piecesToLoad)
+  lock <- newMVar ()
 
   let putStrLnPar str = do
-        waitQSem logLock
+        takeMVar lock
         putStrLn str
-        signalQSem logLock
+        putMVar lock ()
 
-  let shift index = toInteger index * torrent ^. pieceLength
-  let loadPiece !index !piece = do
-        let start = shift index
-        let end = flip (-) 1 $ min (shift $ index + 1) (torrent ^. fileLength)
+  announce <- getPeers torrent
+  let connectToPeer (host, port) = connect host (show port)
 
-        let loop :: Integer -> IO (Either (Url 'Http, Option scheme0) (Url 'Https, Option scheme1))
-            loop n = do
-              when (n > 1000) $ error "Can't find good uri"
-              index <- randomRIO (0 :: Int, P.length (torrent ^. urlList) - 1)
-              let !peerUri = (torrent ^. urlList) !! index
-              case useURI peerUri of
-                Just url -> return url
-                Nothing -> loop (n + 1)
+  let hashes = view Torrent.pieces torrent
 
-        url <- loop 0
+  flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadMode $ \handle -> do
+    forM (P.zip hashes [0 ..]) $ \(hash, index) -> do
+      let offset = convert index * view pieceLength torrent
+      IO.hSeek handle IO.AbsoluteSeek offset
+      piece <- B.hGetSome handle (convert $ view pieceLength torrent)
 
-        case url of
-          Left _ -> return Nothing
-          Right httpsUrl -> runReq defaultHttpConfig $ do
-            liftIO $ putStrLnPar $ T.unpack $ "Loading from url: " <> renderUrl (fst httpsUrl)
+      return $ SHA1.hash piece == hash
 
-            response <- reqCb GET (fst httpsUrl) NoReqBody bsResponse (snd httpsUrl) (addRangeHeaders start end)
-            let !bytes = (responseBody response :: ByteString)
+  let toLoad = [index | (flag, index) <- (P.zip flags [0 ..]), not flag]
+  print toLoad
 
-            let !hash = SHA1.hash bytes
+  globalLock <- newTMVarIO ()
+  globalEvents <- atomically $ newTChan
+  globalState <- newTVarIO $ GlobalState mempty (S.fromList toLoad) globalLock
 
-            return $ if hash == piece then Just bytes else Nothing
+  waiters <- replicateM 20 newEmptyMVar
 
-  let loader = do
-        pair@(index :: Int, piece) <- readChan piecesToLoad
+  forM_ (P.zip waiters [0 .. 40]) $ \(waiter, i) -> do
+    let peer = (view peers announce) !! i
+    let action = connectToPeer peer $ \(socket, address) -> do
+          putStrLnPar $ show (socket, address)
 
-        pieceInFile <- readPiece ioLock handle (torrent ^. pieceLength) (toInteger index)
+          stateRef <- socket & (SocketParser.init >=> newIORef)
 
-        if SHA1.hash pieceInFile == piece
-          then do
-            putStrLnPar $ "Piece " <> show index <> " is already loaded"
-            modifyMVar_ loadState $ return . set (ix index) 3
-            modifyMVar_ finishedPiecesCounter $ return . (+ 1)
-          else do
-            modifyMVar_ loadState $ return . set (ix index) 1
-            loaded <- catch (loadPiece index piece) $ \(e :: SomeException) -> do
-              putStrLnPar $ "An Error ocurred while loading piece #" <> show index
-              return Nothing
+          void $ performHandshake stateRef socket $ Handshake (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-            case loaded of
-              Just bytes -> do
-                putStrLnPar $ "Piece #" <> show index <> " finished"
-                writePiece ioLock handle (torrent ^. pieceLength) (toInteger index) bytes
-              Nothing -> do
-                modifyMVar_ loadState $ return . set (ix index) 0
-                writeChan piecesToLoad pair
+          chan <- atomically $ dupTChan globalEvents
+          connectionRef <- newIORef $ Loader.init socket torrent stateRef globalEvents globalState
 
-        counter <- readMVar finishedPiecesCounter
+          send socket $ buildMessage $ Bitfield $ P.replicate (P.length $ view Torrent.pieces torrent) False
+          send socket $ buildMessage Unchoke
+          send socket $ buildMessage Interested
 
-        when (counter == P.length (torrent ^. pieces)) $ do
-          putMVar finishedLock ()
+          forever $ react connectionRef
 
-        loader
+    void $ forkFinally action $ const $ do
+      putMVar waiter ()
 
-  loadingThreads <- replicateM 32 $ forkIO loader
+  forM_ waiters takeMVar
 
-  -- savingThread <- forkIO $ do
-  --   let loop = do
-  --         (!index, !bytes) <- readChan loadedPieces
-  --         putStrLnPar $ "piece #" <> show index <> " loaded"
-  --         modifyMVar_ loadState $ return . set (ix index) 3
+-- do
+--   message <- runParser stateRef (messageDecoder torrent)
+--   let str = case message of
+--         Bitfield _ -> "Bitfield ..."
+--         Piece index begin piece -> "Piece " <> show index <> " " <> show begin <> " ..."
+--         _ -> show message
 
-  --         hSeek handle AbsoluteSeek (shift index)
-  --         B.hPut handle bytes
-  --         hFlush handle
+--   putStrLnPar $ "peer #" <> show i <> ": " <> str
 
-  --         modifyMVar_ finishedPiecesCounter $ return . (+ 1)
-  --         counter <- readMVar finishedPiecesCounter
-  --         putStrLnPar $ show counter <> "/" <> show (P.length $ torrent ^. pieces)
+--   case message of
+--     Bitfield flags -> do
+--       unless (flags !! 0) $ do
+--         fail "Doesn't have 1st piece"
+--     Unchoke -> do
+--       forM_ [0 .. 15] $ \i -> do
+--         putStrLnPar $ "Sending request #" <> show i
+--         send socket $ buildMessage $ Request 0 (fromInteger $ i * 2 ^ 14) (2 ^ 14)
+--     _ -> return ()
 
-  --         when (counter == P.length (torrent ^. pieces)) $ do
-  --           putMVar finishedLock ()
+-- print $ P.map renderStr $ announce ^. peers
+-- print $ announce ^. interval
 
-  --         loop
-
-  --   loop
-
-  -- updateThread <- forkIO $ do
-  --   let update = do
-  --         threadDelay (10 ^ 6)
-  --         status <- readIORef loadState
-  --         putStrLnPar $ P.concat $ P.map show status
-  --         update
-  --   update
-
-  readMVar finishedLock
-
-  forM_ loadingThreads killThread
-
--- killThread savingThread
-
--- killThread updateThread
+-- close sock

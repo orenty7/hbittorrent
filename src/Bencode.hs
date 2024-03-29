@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
@@ -15,11 +16,8 @@ import Data.Map as M
 import Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Word (Word8)
+import Parser
 import Prelude as P
-
-type ParserT m a = StateT [Word8] m a
-
-type Parser a = ParserT [] a
 
 data Bencode
   = BString ByteString
@@ -30,43 +28,18 @@ data Bencode
 
 makePrisms ''Bencode
 
-peekByte :: Parser Word8
-peekByte = StateT $ \case
-  bytes@(x : _) -> return (x, bytes)
-  _ -> fail "Unexpected EOF"
-
-readByte :: Parser Word8
-readByte = StateT $ \case
-  (x : xs) -> return (x, xs)
-  _ -> fail "Unexpected EOF"
-
-peekChar :: Parser Char
-peekChar = peekByte <&> (toEnum . fromEnum)
-
-readChar :: Parser Char
-readChar = readByte <&> (toEnum . fromEnum)
-
-expectChar :: Char -> Parser ()
-expectChar char = do
-  ch <- readChar
-  when (ch /= char) $ do
-    fail "Incorrect char"
-
-expectChars :: [Char] -> Parser Char
-expectChars chars = asum $ P.map (\char -> expectChar char $> char) chars
-
-digit :: Parser Integer
+digit :: (Parser Word8 p) => p Integer
 digit = asum $ P.map parser ['0' .. '9']
   where
     parser char = expectChar char $> int char
     int char = read [char]
 
-unsigned :: Parser Integer
+unsigned :: (Parser Word8 p) => p Integer
 unsigned = do
   digits <- some digit
   return $ P.foldl (\acc digit -> acc * 10 + digit) 0 digits
 
-parseBInteger :: Parser Integer
+parseBInteger :: (Parser Word8 p) => p Integer
 parseBInteger = do
   expectChar 'i'
 
@@ -81,15 +54,15 @@ parseBInteger = do
 
   return $ sign * value
 
-parseBString :: Parser ByteString
+parseBString :: (Parser Word8 p) => p ByteString
 parseBString = do
   len <- unsigned
   expectChar ':'
-  string <- replicateM (fromInteger len) readByte
+  string <- replicateM (fromInteger len) next
 
   return $ B.pack string
 
-parseBList :: Parser [Bencode]
+parseBList :: (Parser Word8 p) => p [Bencode]
 parseBList = do
   expectChar 'l'
   list <- many parseBencode
@@ -97,7 +70,7 @@ parseBList = do
 
   return list
 
-parseBDict :: Parser (Map ByteString Bencode)
+parseBDict :: (Parser Word8 p) => p (Map ByteString Bencode)
 parseBDict = do
   expectChar 'd'
   kvalues <- many $ do
@@ -109,18 +82,18 @@ parseBDict = do
 
   return $ fromList kvalues
 
-parseBencode :: Parser Bencode
+parseBencode :: (Parser Word8 p) => p Bencode
 parseBencode =
   BInteger <$> parseBInteger
     <|> BString <$> parseBString
     <|> BList <$> parseBList
     <|> BDict <$> parseBDict
 
-parse :: ByteString -> Maybe Bencode
+parse :: (MonadFail m) => ByteString -> m Bencode
 parse bstr = case evalStateT parseBencode (B.unpack bstr) of
-  [x] -> Just x
-  [] -> Nothing
-  _ -> error "Bencode parsed ambiguously"
+  [x] -> return x
+  [] -> fail "No parse"
+  _ -> fail "Bencode parsed ambiguously"
 
 encode :: Bencode -> ByteString
 encode = execWriter . encoder

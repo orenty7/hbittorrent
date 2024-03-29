@@ -5,8 +5,6 @@ module Torrent where
 
 import Bencode
 import Control.Lens
-import Control.Monad.IO.Class
-import Control.Monad.Trans.Maybe
 import qualified Crypto.Hash.SHA1 as SHA1
 import Data.ByteString as B
 import Data.Text as T
@@ -15,10 +13,11 @@ import Text.URI
 
 data Torrent = Torrent
   { _announce :: URI,
+    _name :: Text,
     _pieceLength :: Integer,
     _pieces :: [ByteString],
     _fileLength :: Integer,
-    _urlList :: [URI],
+    _urlList :: Maybe [URI],
     _infoHash :: ByteString
   }
   deriving (Eq, Show)
@@ -39,13 +38,15 @@ splitPieces bstr
 
 mkTorrent :: Bencode -> Maybe Torrent
 mkTorrent bencode = do
-  info <- bencode ^? _BDict . (ix "info") . _BDict
-  name <- (info ^? (ix "name") . _BString) >>= maybeDecodeUtf8
-  pieceLength <- info ^? (ix "piece length") . _BInteger
-  pieces <- splitPieces <$> info ^? (ix "pieces") . _BString
-  fileLength <- info ^? (ix "length") . _BInteger
+  announce <- bencode ^? _BDict . ix "announce" . _BString >>= maybeDecodeUtf8 >>= mkURI
 
-  let urlList = bencode ^.. _BDict . (ix "url-list") . _BList . folded . _BString
+  info <- bencode ^? _BDict . ix "info" . _BDict
+  name <- info ^? ix "name" . _BString >>= maybeDecodeUtf8
+  pieceLength <- info ^? ix "piece length" . _BInteger
+  pieces <- splitPieces <$> info ^? ix "pieces" . _BString
+  fileLength <- info ^? ix "length" . _BInteger
+
+  let urlList = bencode ^? _BDict . ix "url-list" . _BList
 
   let hash = SHA1.hash $ encode (BDict info)
 
@@ -55,6 +56,9 @@ mkTorrent bencode = do
           then mkURI (text <> name)
           else mkURI text
 
-  parsedUrlList <- traverse makeUri urlList
+  let parsedUrlList = do
+        list <- urlList
+        let bstrings = list ^.. folded . _BString
+        traverse makeUri bstrings
 
-  return $ Torrent emptyURI pieceLength pieces fileLength parsedUrlList hash
+  return $ Torrent announce name pieceLength pieces fileLength parsedUrlList hash

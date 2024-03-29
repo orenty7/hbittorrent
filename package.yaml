@@ -24,12 +24,18 @@ dependencies:
   - bytestring
   - containers
   - cryptohash-sha1
+  - exceptions
   - http-client
+  - http-conduit
   - lens
   - modern-uri
   - mtl
+  - network
+  - network-simple
+  - network-uri
   - random
-  - req
+  - stm
+  - template-haskell
   - text
   - transformers
   - utf8-string
