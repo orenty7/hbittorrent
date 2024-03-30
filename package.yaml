@@ -39,6 +39,7 @@ dependencies:
   - text
   - transformers
   - utf8-string
+  - random
 ghc-options:
   - -Wall
   - -Wcompat

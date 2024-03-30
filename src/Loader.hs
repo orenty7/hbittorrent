@@ -25,6 +25,7 @@ import qualified System.IO as IO
 import Torrent
 import Tracker
 import Prelude as P
+import System.Random
 
 data Event = Finished W.Word32 deriving (Show)
 
@@ -35,7 +36,8 @@ type SubpieceIndex = W.Word32
 data GlobalState = GlobalState
   { _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
     _piecesToLoad :: S.Set PieceIndex,
-    _lock :: STM.TMVar ()
+    _lock :: STM.TMVar (),
+    _randomGen :: StdGen
   }
 
 makeLenses ''GlobalState
@@ -225,18 +227,28 @@ react connectionRef = do
     unless ((view chocked connection) || M.size (view queuedPieces connection) > 5) $ do
       pieceToRequest <- STM.atomically $ do
         state <- STM.readTVar (view globalState connection)
-
-        if S.size (view piecesToLoad state) == 0
+        let toLoad = (view piecesToLoad state)
+        if S.size toLoad == 0
           then return Nothing
           else do
-            let (piece, rest) = S.deleteFindMin (view piecesToLoad state)
-            STM.writeTVar (view globalState connection) (set piecesToLoad rest state)
+            let range = (0, S.size toLoad - 1)
+            let (index, randomGen') = randomR range (view randomGen state) 
+            let piece = S.elemAt index toLoad
+            STM.writeTVar 
+              (view globalState connection) 
+              (state 
+                & (over piecesToLoad (S.deleteAt index))
+                & (set randomGen randomGen'))
 
             return $ Just piece
 
       case pieceToRequest of
-        Nothing -> return ()
+        Nothing -> when (M.null (view queuedPieces connection)) $ do
+          Loader.log connection "Finished, breaking connection"
+          fail "Done"
+          
         Just index -> do
+          Loader.log connection $ "Requesting piece #" <> show index
           writeIORef connectionRef (over queuedPieces (M.insert index ()) connection)
 
           let subpiecesInPiece = calcSubpiecesInPiece connection index
@@ -259,7 +271,7 @@ react connectionRef = do
 
     processEvents $ \case
       Finished piece -> do
-        Loader.log connection $ "finished piece " <> show piece
+        -- Loader.log connection $ "finished piece " <> show piece
         TCP.send (view Loader.socket connection) $ buildMessage $ Have piece
 
 -- Piece index begin length

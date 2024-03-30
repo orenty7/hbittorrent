@@ -13,6 +13,7 @@ import Data.Text.Encoding
 import Text.URI
 import qualified Data.Maybe
 import Control.Monad
+import Prelude as P
 
 data Torrent = Torrent
   { _announce :: Maybe (Either URI [[URI]]),
@@ -43,8 +44,8 @@ mkTorrent :: Bencode -> Maybe Torrent
 mkTorrent bencode = do
   let announce = bencode ^?_BDict.(ix "announce")._BString >>= maybeDecodeUtf8 >>= mkURI
   
-  let rawAnnounceList = bencode^.._BDict.(ix "announce-list"._BList.each._BList.each)._BString 
-  let announceList = Data.Maybe.mapMaybe (maybeDecodeUtf8 >=> mkURI) rawAnnounceList
+  let rawAnnounceList = P.map (^..each._BString) (bencode^.._BDict.(ix "announce-list"._BList.each._BList))
+  let announceList = P.map (Data.Maybe.mapMaybe (maybeDecodeUtf8 >=> mkURI)) rawAnnounceList
 
   info <- bencode ^? _BDict . ix "info" . _BDict
   name <- info ^? ix "name" . _BString >>= maybeDecodeUtf8
@@ -66,5 +67,5 @@ mkTorrent bencode = do
         list <- urlList
         let bstrings = list ^.. folded . _BString
         traverse makeUri bstrings
-
-  return $ Torrent (Left <$> announce) name pieceLength pieces fileLength parsedUrlList hash
+  
+  return $ Torrent (if P.null announceList then Left <$> announce else Just (Right announceList)) name pieceLength pieces fileLength parsedUrlList hash

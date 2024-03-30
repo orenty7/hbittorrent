@@ -37,6 +37,7 @@ import Prelude as P
 import Data.Maybe (isJust)
 import System.Environment (getArgs)
 import Control.Applicative
+import System.Random
 
 
 readTorrent :: String -> IO (Maybe Torrent)
@@ -65,8 +66,14 @@ main = do
 
 
   case (view announce torrent) of
-    (Just (Left url)) -> do
-      announce <- getPeers torrent url 6881
+    (Just announceInfo) -> do
+      announce <- case announceInfo of
+        Left url -> getPeers torrent url 6881
+        Right urlss -> do
+          let flatten urlss = urlss >>= id
+          let urls = flatten urlss
+
+          asum $ P.map (\url -> getPeers torrent url 6881) urls
 
       let connectToPeer (host, port) = connect host (show port)
 
@@ -85,11 +92,12 @@ main = do
 
       let toLoad = [index | (flag, index) <- (P.zip flags [0 ..]), not flag]
       print toLoad
-      
+
       globalLock <- newTMVarIO ()
       globalEvents <- atomically $ newTChan
-      globalState <- newTVarIO $ GlobalState mempty (S.fromList toLoad) globalLock
-
+      globalRandomGen <- newStdGen
+      globalState <- newTVarIO $ GlobalState mempty (S.fromList toLoad) globalLock globalRandomGen
+      
       waiters <- replicateM 40 newEmptyMVar
 
       forM_ (P.zip waiters [0 .. 40]) $ \(waiter, i) -> do
@@ -102,7 +110,7 @@ main = do
               void $ performHandshake stateRef socket $ Handshake (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
               chan <- atomically $ dupTChan globalEvents
-              connectionRef <- newIORef $ Loader.init socket torrent stateRef globalEvents globalState
+              connectionRef <- newIORef $ Loader.init socket torrent stateRef chan globalState
 
               send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
               send socket $ buildMessage Unchoke
