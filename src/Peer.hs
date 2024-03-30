@@ -25,7 +25,7 @@ type Host = String
 
 type Port = Word32
 
-data Handshake = Handshake {_infoHash :: ByteString, _peerId :: ByteString} deriving (Eq, Show)
+data Handshake = Handshake {_extentionFlags :: [Bool], _infoHash :: ByteString, _peerId :: ByteString} deriving (Eq, Show)
 
 makeLenses ''Handshake
 
@@ -121,13 +121,13 @@ bitunpack bstr =
   let packed :: Integer
       packed = P.foldr (\byte acc -> acc * 256 + toInteger byte) 0 (B.unpack bstr)
 
-      go :: Integer -> [Bool] -> [Bool]
-      go 0 flags = flags
-      go x flags =
+      go :: Int -> Integer -> [Bool] -> [Bool]
+      go 0 _ flags = P.reverse flags
+      go n x flags =
         if even x
-          then go (x `div` 2) (False : flags)
-          else go (x `div` 2) (True : flags)
-   in go packed []
+          then go (n - 1) (x `div` 2) (False : flags)
+          else go (n - 1) (x `div` 2) (True : flags)
+   in go ((B.length bstr) * 8) packed []
 
 handshakeBytes :: ByteString
 handshakeBytes = B.pack $ (19 :) $ B.unpack "BitTorrent protocol"
@@ -135,7 +135,7 @@ handshakeBytes = B.pack $ (19 :) $ B.unpack "BitTorrent protocol"
 buildHandshake :: Handshake -> ByteString
 buildHandshake handshake = execWriter $ do
   tell handshakeBytes
-  tell $ B.replicate 8 0
+  tell $ encode $ (view extentionFlags handshake)
   tell $ handshake ^. Peer.infoHash
   tell $ handshake ^. Peer.peerId
 
@@ -145,11 +145,11 @@ decodeHandshake = do
   forM_ ("BitTorrent protocol" :: String) $ \char -> do
     expectChar char
 
-  replicateM_ 8 readByte
+  extentionFlags <- bitunpack <$> B.pack <$> replicateM 8 readByte
   infoHash <- B.pack <$> replicateM 20 readByte
   peerId <- B.pack <$> replicateM 20 readByte
 
-  return $ Handshake infoHash peerId
+  return $ Handshake extentionFlags infoHash peerId
 
 buildMessage :: Message -> ByteString
 buildMessage message =

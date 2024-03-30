@@ -53,7 +53,11 @@ eval list@(x:xs) = (eval xs) `seq` x `seq` list
 
 main :: IO ()
 main = do
-  [filename] <- getArgs
+  args <- getArgs
+  let filename = case args of
+                    [filename] -> filename
+                    _ -> "debian-12.4.0-amd64-DVD-1.iso.torrent"
+
 
   (Just torrent) <- readTorrent filename --"Большой куш Snatch (Гай Ричи Guy Ritchie) [2000, Великобритания, США, криминал, комедия, боевик, WEB-DL 2160p, HDR10, Dolby Vi [rutracker-6375066].torrent"
 
@@ -106,11 +110,15 @@ main = do
               putStrLnPar $ show (socket, address)
 
               stateRef <- socket & (SocketParser.init >=> newIORef)
+              let handshake = Handshake (replicate (8 * 8) False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-              void $ performHandshake stateRef socket $ Handshake (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
-
+              handshake <- performHandshake stateRef socket handshake 
+            
               chan <- atomically $ dupTChan globalEvents
               connectionRef <- newIORef $ Loader.init socket torrent stateRef chan globalState
+              connection <- readIORef connectionRef
+              Loader.log connection $ show (view extentionFlags handshake)
+              
 
               send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
               send socket $ buildMessage Unchoke

@@ -80,15 +80,11 @@ log connection message = do
 convert :: (Integral a, Integral b) => a -> b
 convert = fromInteger . toInteger
 
-performHandshake :: IORef SocketParserState -> TCP.Socket -> Handshake -> IO PeerId
+performHandshake :: IORef SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
 performHandshake stateRef socket handshake = do
   TCP.send socket $ buildHandshake handshake
-  response <- runParser stateRef decodeHandshake
+  runParser stateRef decodeHandshake
 
-  when (view Peer.infoHash response /= view Peer.infoHash handshake) $ do
-    fail "Infohashes doesn't match"
-
-  return $ handshake ^. peerId
 
 init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar GlobalState -> Connection
 init socket torrent stateRef globalEvents globalState =
@@ -221,7 +217,7 @@ react connectionRef = do
             let bytes = piece & B.drop (convert offset) & B.take (convert length)
             let encoded = buildMessage $ Piece index offset bytes
             TCP.send (view Loader.socket connection) encoded
-
+      
     connection <- readIORef connectionRef
 
     unless ((view chocked connection) || M.size (view queuedPieces connection) > 5) $ do
