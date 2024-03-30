@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE RankNTypes #-}
 
 module Torrent where
 
@@ -10,12 +11,14 @@ import Data.ByteString as B
 import Data.Text as T
 import Data.Text.Encoding
 import Text.URI
+import qualified Data.Maybe
+import Control.Monad
 
 data Torrent = Torrent
-  { _announce :: URI,
+  { _announce :: Maybe (Either URI [[URI]]),
     _name :: Text,
     _pieceLength :: Integer,
-    _pieces :: [ByteString],
+    _pieces :: ByteString,
     _fileLength :: Integer,
     _urlList :: Maybe [URI],
     _infoHash :: ByteString
@@ -29,21 +32,24 @@ maybeDecodeUtf8 bstr = case decodeUtf8' bstr of
   Right text -> Just text
   _ -> Nothing
 
-splitPieces :: ByteString -> [ByteString]
-splitPieces bstr
-  | bstr == B.empty = []
-  | otherwise = piece : splitPieces rest
-  where
-    (piece, rest) = B.splitAt 20 bstr
+
+
+piece :: Int -> Lens' Torrent ByteString
+piece index = let offset = index * 20 in
+    lens ((B.take 20 . B.drop offset) . (view pieces))
+         (\torrent newhash -> (set pieces (B.take offset (torrent^.pieces) <> newhash <> B.drop (offset + 20) (torrent^.pieces)) torrent)) 
 
 mkTorrent :: Bencode -> Maybe Torrent
 mkTorrent bencode = do
-  announce <- bencode ^? _BDict . ix "announce" . _BString >>= maybeDecodeUtf8 >>= mkURI
+  let announce = bencode ^?_BDict.(ix "announce")._BString >>= maybeDecodeUtf8 >>= mkURI
+  
+  let rawAnnounceList = bencode^.._BDict.(ix "announce-list"._BList.each._BList.each)._BString 
+  let announceList = Data.Maybe.mapMaybe (maybeDecodeUtf8 >=> mkURI) rawAnnounceList
 
   info <- bencode ^? _BDict . ix "info" . _BDict
   name <- info ^? ix "name" . _BString >>= maybeDecodeUtf8
   pieceLength <- info ^? ix "piece length" . _BInteger
-  pieces <- splitPieces <$> info ^? ix "pieces" . _BString
+  pieces <- info ^? ix "pieces" . _BString
   fileLength <- info ^? ix "length" . _BInteger
 
   let urlList = bencode ^? _BDict . ix "url-list" . _BList
@@ -61,4 +67,4 @@ mkTorrent bencode = do
         let bstrings = list ^.. folded . _BString
         traverse makeUri bstrings
 
-  return $ Torrent announce name pieceLength pieces fileLength parsedUrlList hash
+  return $ Torrent (Left <$> announce) name pieceLength pieces fileLength parsedUrlList hash

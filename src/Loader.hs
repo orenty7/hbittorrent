@@ -100,8 +100,18 @@ requeuePieces connection = do
 
   return ()
 
-calcSubpiecesInPiece :: (Integral a) => Connection -> a
-calcSubpiecesInPiece connection = fromInteger $ view (torrent . pieceLength) connection `div` subpieceSize
+calcSubpiecesInPiece :: (Integral a) => Connection ->  PieceIndex -> a
+calcSubpiecesInPiece connection index = let 
+        isLast = index == (connection 
+                              & view (torrent.Torrent.pieces) 
+                              & B.length
+                              & (\x -> x `div` 20 - 1)
+                              & convert)
+        currentPieceLength = if isLast
+          then view (torrent.fileLength) connection `mod` view (torrent.pieceLength) connection
+          else view (torrent.pieceLength) connection
+       in
+    fromInteger $ (currentPieceLength + subpieceSize - 1) `div` subpieceSize
 
 addSubpiece :: Connection -> W.Word32 -> W.Word32 -> B.ByteString -> STM.STM ()
 addSubpiece connection index offset subpiece = do
@@ -123,12 +133,12 @@ tryToBuildPiece connection index = do
   let pieceMap = view subpieceStorage state
   let subpieceMap = M.findWithDefault mempty index pieceMap
 
-  let subpieces = Data.Maybe.mapMaybe (`M.lookup` subpieceMap) [0 .. calcSubpiecesInPiece connection - 1]
-
-  if P.length subpieces == calcSubpiecesInPiece connection
+  let subpieces = Data.Maybe.mapMaybe (`M.lookup` subpieceMap) [0 .. calcSubpiecesInPiece connection index - 1]
+  
+  if P.length subpieces == calcSubpiecesInPiece connection index
     then
       let piece = mconcat subpieces
-          hash = view (torrent . Torrent.pieces) connection !! convert index
+          hash = view (torrent . Torrent.piece (convert index)) connection
        in if SHA1.hash piece /= hash
             then do
               STM.writeTVar
@@ -154,11 +164,11 @@ react connectionRef = do
   flip onException (requeuePieces connection) $ do
     message <- runParser (view stateRef connection) (messageDecoder $ view torrent connection)
 
-    let str = show message
-    Loader.log connection $
-      if P.length str > 100
-        then P.reverse $ P.dropWhile (/= ',') $ P.reverse $ P.take 100 str
-        else str
+    -- let str = show message
+    -- Loader.log connection $
+    --   if P.length str > 100
+    --     then P.reverse $ P.dropWhile (/= ',') $ P.reverse $ P.take 100 str
+    --     else str
 
     case message of
       Cancel {} ->
@@ -229,7 +239,8 @@ react connectionRef = do
         Just index -> do
           writeIORef connectionRef (over queuedPieces (M.insert index ()) connection)
 
-          let subpiecesInPiece = calcSubpiecesInPiece connection
+          let subpiecesInPiece = calcSubpiecesInPiece connection index
+
           forM_ [0 .. subpiecesInPiece - 1] $ \subindex -> do
             let message = buildMessage $ Request index (subindex * subpieceSize) subpieceSize
             TCP.send (view Loader.socket connection) $ message

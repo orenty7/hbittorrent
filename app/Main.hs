@@ -2,6 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE BangPatterns #-}
 
 module Main (main) where
 
@@ -33,18 +34,27 @@ import Text.URI
 import Torrent
 import Tracker
 import Prelude as P
+import Data.Maybe (isJust)
+import System.Environment (getArgs)
+import Control.Applicative
 
-test :: IO (Maybe Torrent)
-test = do
-  bstr <- B.readFile "debian-12.4.0-amd64-DVD-1.iso.torrent"
 
+readTorrent :: String -> IO (Maybe Torrent)
+readTorrent name = do
+  bstr <- B.readFile name
   return $ do
     bencode <- parse bstr
     mkTorrent bencode
 
+eval :: [a] -> [a]
+eval [] = []
+eval list@(x:xs) = (eval xs) `seq` x `seq` list 
+
 main :: IO ()
 main = do
-  (Just torrent) <- test
+  [filename] <- getArgs
+
+  (Just torrent) <- readTorrent filename --"Большой куш Snatch (Гай Ричи Guy Ritchie) [2000, Великобритания, США, криминал, комедия, боевик, WEB-DL 2160p, HDR10, Dolby Vi [rutracker-6375066].torrent"
 
   lock <- newMVar ()
 
@@ -53,71 +63,55 @@ main = do
         putStrLn str
         putMVar lock ()
 
-  announce <- getPeers torrent
-  let connectToPeer (host, port) = connect host (show port)
 
-  let hashes = view Torrent.pieces torrent
+  case (view announce torrent) of
+    (Just (Left url)) -> do
+      announce <- getPeers torrent url 6881
 
-  flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadMode $ \handle -> do
-    forM (P.zip hashes [0 ..]) $ \(hash, index) -> do
-      let offset = convert index * view pieceLength torrent
-      IO.hSeek handle IO.AbsoluteSeek offset
-      piece <- B.hGetSome handle (convert $ view pieceLength torrent)
+      let connectToPeer (host, port) = connect host (show port)
 
-      return $ SHA1.hash piece == hash
+      let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
 
-  let toLoad = [index | (flag, index) <- (P.zip flags [0 ..]), not flag]
-  print toLoad
+      flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadWriteMode $ \handle -> do
+        flags <- forM [0 .. nPieces - 1] $ \index -> do
+          let hash = torrent^.Torrent.piece index
+          let offset = convert index * view pieceLength torrent
+          IO.hSeek handle IO.AbsoluteSeek offset
+          piece <- B.hGetSome handle (convert $ view pieceLength torrent)
 
-  globalLock <- newTMVarIO ()
-  globalEvents <- atomically $ newTChan
-  globalState <- newTVarIO $ GlobalState mempty (S.fromList toLoad) globalLock
+          return $! SHA1.hash piece == hash
 
-  waiters <- replicateM 20 newEmptyMVar
+        return $ eval flags
 
-  forM_ (P.zip waiters [0 .. 40]) $ \(waiter, i) -> do
-    let peer = (view peers announce) !! i
-    let action = connectToPeer peer $ \(socket, address) -> do
-          putStrLnPar $ show (socket, address)
+      let toLoad = [index | (flag, index) <- (P.zip flags [0 ..]), not flag]
+      print toLoad
+      
+      globalLock <- newTMVarIO ()
+      globalEvents <- atomically $ newTChan
+      globalState <- newTVarIO $ GlobalState mempty (S.fromList toLoad) globalLock
 
-          stateRef <- socket & (SocketParser.init >=> newIORef)
+      waiters <- replicateM 40 newEmptyMVar
 
-          void $ performHandshake stateRef socket $ Handshake (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
+      forM_ (P.zip waiters [0 .. 40]) $ \(waiter, i) -> do
+        let peer = (view peers announce) !! i
+        let action = connectToPeer peer $ \(socket, address) -> do
+              putStrLnPar $ show (socket, address)
 
-          chan <- atomically $ dupTChan globalEvents
-          connectionRef <- newIORef $ Loader.init socket torrent stateRef globalEvents globalState
+              stateRef <- socket & (SocketParser.init >=> newIORef)
 
-          send socket $ buildMessage $ Bitfield $ P.replicate (P.length $ view Torrent.pieces torrent) False
-          send socket $ buildMessage Unchoke
-          send socket $ buildMessage Interested
+              void $ performHandshake stateRef socket $ Handshake (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-          forever $ react connectionRef
+              chan <- atomically $ dupTChan globalEvents
+              connectionRef <- newIORef $ Loader.init socket torrent stateRef globalEvents globalState
 
-    void $ forkFinally action $ const $ do
-      putMVar waiter ()
+              send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
+              send socket $ buildMessage Unchoke
+              send socket $ buildMessage Interested
 
-  forM_ waiters takeMVar
+              forever $ react connectionRef
 
--- do
---   message <- runParser stateRef (messageDecoder torrent)
---   let str = case message of
---         Bitfield _ -> "Bitfield ..."
---         Piece index begin piece -> "Piece " <> show index <> " " <> show begin <> " ..."
---         _ -> show message
+        void $ forkFinally action $ const $ do
+          putMVar waiter ()
 
---   putStrLnPar $ "peer #" <> show i <> ": " <> str
-
---   case message of
---     Bitfield flags -> do
---       unless (flags !! 0) $ do
---         fail "Doesn't have 1st piece"
---     Unchoke -> do
---       forM_ [0 .. 15] $ \i -> do
---         putStrLnPar $ "Sending request #" <> show i
---         send socket $ buildMessage $ Request 0 (fromInteger $ i * 2 ^ 14) (2 ^ 14)
---     _ -> return ()
-
--- print $ P.map renderStr $ announce ^. peers
--- print $ announce ^. interval
-
--- close sock
+      forM_ waiters takeMVar
+    _ -> putStrLnPar "Url list is not supported yet"

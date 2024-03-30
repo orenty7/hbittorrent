@@ -32,13 +32,13 @@ data Announce = Announce
 
 makeLenses ''Announce
 
-buildQuery :: Torrent -> Query
-buildQuery torrent =
+buildQuery :: Torrent -> Word32 -> Query
+buildQuery torrent port =
   P.map
     (Just <$>)
     [ ("info_hash", torrent ^. infoHash),
       ("peer_id", "asdfasdfasdfasdfasdf"),
-      ("port", encode $ show 6881),
+      ("port", encode $ show port),
       ("uploaded", encode $ show 0),
       ("downloaded", encode $ show 0),
       ("left", encode $ show (torrent ^. fileLength))
@@ -65,13 +65,13 @@ extractPeer bencode = do
 
   return (T.unpack $ decodeUtf8 host, fromInteger port)
 
-createRequestAnnounce :: (MonadFail m) => Torrent -> m Request
-createRequestAnnounce torrent = do
+createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Word32 -> m Request
+createRequestAnnounce torrent announce port = do
   request <-
-    parseRequest (renderStr (view announce torrent))
-      `orFail` "Can't reparse request"
+    (parseRequest $ renderStr $ announce)
+      `orFail` "Can't reparse or announce is not present request"
 
-  return $ addToRequestQueryString (buildQuery torrent) request
+  return $ addToRequestQueryString (buildQuery torrent port) request
 
 parseResponse :: (MonadFail m) => Bencode -> m Announce
 parseResponse bencode = do
@@ -85,9 +85,9 @@ parseResponse bencode = do
 
   return $ Announce interval (mapMaybe extractPeer bencodedPeers)
 
-getPeers :: (MonadIO m, MonadFail m) => Torrent -> m Announce
-getPeers torrent = do
-  request <- createRequestAnnounce torrent
+getPeers :: (MonadIO m, MonadFail m) => Torrent -> URI -> Word32 -> m Announce
+getPeers torrent announce port = do
+  request <- createRequestAnnounce torrent announce port
   response <- httpBS request
   bencode <- parse $ responseBody response
 

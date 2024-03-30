@@ -175,7 +175,7 @@ messageDecoder torrent = do
         3 -> return NotInterested
         4 -> Have <$> readWord32
         5 -> do
-          let pieceCount = P.length (torrent ^. pieces)
+          let pieceCount = B.length (torrent ^. pieces) `div` 20
           let bytesToRead = fromInteger $ toInteger (messageLength - 1)
 
           bytes <- replicateM bytesToRead readByte

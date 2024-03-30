@@ -41,7 +41,7 @@ instance Parser Word8 SocketParser where
       then return $ B.index bstr idx
       else do
         sock <- gets (view socket)
-        maybeBytes <- recv sock (2 ^ 16)
+        maybeBytes <- recv sock (2 ^ 20)
         bytes <- maybeBytes `orFail` "End of input"
 
         let newbstr = bstr <> bytes
