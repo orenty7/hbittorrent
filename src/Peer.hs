@@ -8,6 +8,7 @@
 
 module Peer where
 
+import qualified Bencode
 import Control.Lens
 import Control.Monad
 import Control.Monad.State
@@ -185,4 +186,13 @@ messageDecoder torrent = do
           where
             bytesToRead = fromInteger $ toInteger $ messageLength - 1 - 4 - 4
         8 -> Cancel <$> readWord32 <*> readWord32 <*> readWord32
-        _ -> fail "Incorrect message type"
+        20 -> do
+          readByte
+          bytes <- B.pack <$> replicateM (fromInteger $ toInteger messageLength - 1) readByte
+          let (Just bencode) = Bencode.parse bytes
+
+          liftIO $ print bencode
+          -- liftIO $ putStrLn $ "Cannot decode message " <> show bytes
+
+          fail "Incorrect message"
+        _ -> fail "Cannot decode message"

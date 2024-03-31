@@ -76,96 +76,97 @@ main = do
 
   let putStrLnPar str = putStrPar (str <> "\n")
 
-  case (view announce torrent) of
-    (Just announceInfo) -> do
-      let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
+  -- case (view announce torrent) of
+  -- (Just announceInfo) -> do
+  let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
 
-      flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadWriteMode $ \handle -> do
-        counterRef <- newIORef 0
+  flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadWriteMode $ \handle -> do
+    counterRef <- newIORef 0
 
-        flags <- forM [0 .. nPieces - 1] $ \index -> do
-          let hash = torrent ^. Torrent.piece index
-          let offset = convert index * view pieceLength torrent
-          IO.hSeek handle IO.AbsoluteSeek offset
-          piece <- B.hGetSome handle (convert $ view pieceLength torrent)
+    flags <- forM [0 .. nPieces - 1] $ \index -> do
+      let hash = torrent ^. Torrent.piece index
+      let offset = convert index * view pieceLength torrent
+      IO.hSeek handle IO.AbsoluteSeek offset
+      piece <- B.hGetSome handle (convert $ view pieceLength torrent)
 
-          let flag = SHA1.hash piece == hash
+      let flag = SHA1.hash piece == hash
 
-          when flag $ do
-            modifyIORef counterRef (+ 1)
+      when flag $ do
+        modifyIORef counterRef (+ 1)
 
-          when (index `mod` 50 == 0) $ do
-            counter <- readIORef counterRef
-            putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show index <> ")"
-
-          return $! flag
-
+      when (index `mod` 50 == 0) $ do
         counter <- readIORef counterRef
-        putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
-        return $ eval flags
+        putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show index <> ")"
 
-      putStrLnPar ""
-      putStrLnPar "Connecting to the tracker..."
+      return $! flag
 
-      announce <- case announceInfo of
-        Left url -> Tracker.getPeers torrent url 6881
-        Right urlss -> do
-          let flatten urlss = urlss >>= id
-          let urls = flatten urlss
+    counter <- readIORef counterRef
+    putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
+    return $ eval flags
 
-          asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
+  let (finished, toLoad) = Data.List.partition fst (P.zip flags [0 ..])
+  putStrLnPar ""
+  putStrLnPar "Connecting to the DHT..."
+  peers <- Dht.find (view Torrent.infoHash torrent)
+  putStrLnPar $ "peers: " <> show peers
+  -- announce <- case announceInfo of
+  --   Left url -> Tracker.getPeers torrent url 6881
+  --   Right urlss -> do
+  --     let flatten urlss = urlss >>= id
+  --     let urls = flatten urlss
 
-      let (finished, toLoad) = Data.List.partition fst (P.zip flags [0 ..])
+  --     asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
 
-      globalLock <- newTMVarIO ()
-      globalEvents <- atomically $ newTChan
-      globalRandomGen <- newStdGen
-      globalState <-
-        newTVarIO $
-          LoaderState
-            []
-            mempty
-            (S.fromList $ P.map snd toLoad)
-            (S.fromList $ P.map snd finished)
-            globalLock
-            globalRandomGen
+  globalLock <- newTMVarIO ()
+  globalEvents <- atomically newTChan
+  globalRandomGen <- newStdGen
+  globalState <-
+    newTVarIO $
+      LoaderState
+        []
+        mempty
+        (S.fromList $ P.map snd toLoad)
+        (S.fromList $ P.map snd finished)
+        globalLock
+        globalRandomGen
 
-      waiters <- replicateM 40 newEmptyMVar
+  waiters <- replicateM (P.length peers - 1) newEmptyMVar
 
-      putStrLnPar "Connecting to peers..."
+  putStrLnPar "Connecting to peers..."
 
-      forM_ (P.zip waiters [0 .. 40]) $ \(waiter, i) -> do
-        let (host, port) = (view peers announce) !! i
+  forM_ (P.zip waiters peers) $ \(waiter, peer) -> do
+    let action = withTcp $ \socket -> do
+          -- addr : _ <- Socket.getAddrInfo Nothing (Just host) (Just $ show port)
+          Socket.connect socket peer
 
-        let action = withTcp $ \socket -> do
-              addr : _ <- Socket.getAddrInfo Nothing (Just host) (Just $ show port)
-              Socket.connect socket (Socket.addrAddress addr)
+          stateRef <- socket & (SocketParser.init >=> newIORef)
 
-              stateRef <- socket & (SocketParser.init >=> newIORef)
-              let handshake = Handshake (replicate (8 * 8) False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
+          let handshake = Handshake (replicate (8 * 8 - 20) False <> [True] <> replicate 19 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-              handshake <- performHandshake stateRef socket handshake
+          handshake <- performHandshake stateRef socket handshake
+          let flags = (view extentionFlags handshake)
 
-              chan <- atomically $ dupTChan globalEvents
-              connectionRef <- newIORef $ Loader.init socket torrent stateRef chan globalState
-              connection <- readIORef connectionRef
+          when ((P.take 8 $ P.drop (5 * 8) flags) !! 4) $ do
+            putStrLnPar "Supports extention protocol!"
 
-              SocketBs.send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
-              SocketBs.send socket $ buildMessage Unchoke
-              SocketBs.send socket $ buildMessage Interested
+          chan <- atomically $ dupTChan globalEvents
+          connectionRef <- newIORef $ Loader.init socket torrent stateRef chan globalState
 
-              forever $ react connectionRef
+          SocketBs.send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
+          SocketBs.send socket $ buildMessage Unchoke
+          SocketBs.send socket $ buildMessage Interested
 
-        let unlockWaiter = putMVar waiter ()
+          forever $ react connectionRef
 
-        void $ forkFinally action (const unlockWaiter)
+    let unlockWaiter = putMVar waiter ()
 
-      forM_ waiters takeMVar
-      finished <- atomically $ do
-        state <- readTVar globalState
-        return $ P.null (view piecesToLoad state)
+    void $ forkFinally action (const unlockWaiter)
 
-      if finished
-        then putStrLnPar "Finished"
-        else putStrLnPar "Something went wrong, please restart the torrent"
-    _ -> putStrLnPar "Url list is not supported yet"
+  forM_ waiters takeMVar
+  finished <- atomically $ do
+    state <- readTVar globalState
+    return $ P.null (view piecesToLoad state)
+
+  if finished
+    then putStrLnPar "Finished"
+    else putStrLnPar "Something went wrong, please restart the torrent"
