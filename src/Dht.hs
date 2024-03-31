@@ -154,4 +154,4 @@ find hash = find' [] root
             let newpath = current : path
             let addresses = P.map (find' newpath . view address) nodes
 
-            asum $ addresses <> [find' path current]
+            asum $ addresses <> (if P.null path then [find' [] current] else [])

@@ -78,14 +78,6 @@ main = do
 
   case (view announce torrent) of
     (Just announceInfo) -> do
-      announce <- case announceInfo of
-        Left url -> Tracker.getPeers torrent url 6881
-        Right urlss -> do
-          let flatten urlss = urlss >>= id
-          let urls = flatten urlss
-
-          asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
-
       let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
 
       flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadWriteMode $ \handle -> do
@@ -108,9 +100,20 @@ main = do
 
           return $! flag
 
+        counter <- readIORef counterRef
+        putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
         return $ eval flags
 
       putStrLnPar ""
+      putStrLnPar "Connecting to the tracker..."
+
+      announce <- case announceInfo of
+        Left url -> Tracker.getPeers torrent url 6881
+        Right urlss -> do
+          let flatten urlss = urlss >>= id
+          let urls = flatten urlss
+
+          asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
 
       let (finished, toLoad) = Data.List.partition fst (P.zip flags [0 ..])
 
@@ -119,7 +122,8 @@ main = do
       globalRandomGen <- newStdGen
       globalState <-
         newTVarIO $
-          GlobalState
+          LoaderState
+            []
             mempty
             (S.fromList $ P.map snd toLoad)
             (S.fromList $ P.map snd finished)

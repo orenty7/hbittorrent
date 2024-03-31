@@ -33,16 +33,6 @@ type PieceIndex = W.Word32
 
 type SubpieceIndex = W.Word32
 
-data GlobalState = GlobalState
-  { _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
-    _piecesToLoad :: S.Set PieceIndex,
-    _finishedPieces :: S.Set PieceIndex,
-    _lock :: STM.TMVar (),
-    _randomGen :: StdGen
-  }
-
-makeLenses ''GlobalState
-
 data Connection = Connection
   { _socket :: TCP.Socket,
     _chocked :: Bool,
@@ -52,14 +42,19 @@ data Connection = Connection
     _stateRef :: IORef SP.SocketParserState,
     _queuedPieces :: M.Map PieceIndex (),
     _globalEvents :: STM.TChan Event,
-    _globalState :: STM.TVar GlobalState
+    _globalState :: STM.TVar LoaderState
+  }
+
+data LoaderState = LoaderState
+  { _connections :: [Connection],
+    _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
+    _piecesToLoad :: S.Set PieceIndex,
+    _finishedPieces :: S.Set PieceIndex,
+    _lock :: STM.TMVar (),
+    _randomGen :: StdGen
   }
 
 makeLenses ''Connection
-
-data LoaderState = LoaderState
-  { _connections :: [Connection]
-  }
 
 makeLenses ''LoaderState
 
@@ -87,7 +82,7 @@ performHandshake stateRef socket handshake = do
   TCP.send socket $ buildHandshake handshake
   runParser stateRef decodeHandshake
 
-init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar GlobalState -> Connection
+init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
 init socket torrent stateRef globalEvents globalState =
   Connection socket False False torrent mempty stateRef mempty globalEvents globalState
 

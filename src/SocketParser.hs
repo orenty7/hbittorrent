@@ -45,8 +45,7 @@ instance Parser Word8 SocketParser where
         bytes <- maybeBytes `orFail` "End of input"
 
         let newbstr = bstr <> bytes
-        liftIO $ writeIORef ref (newbstr)
-        -- liftIO $ print newbstr
+        liftIO $ writeIORef ref newbstr
         return $ B.index newbstr idx
 
 init :: Socket -> IO SocketParserState
@@ -65,10 +64,3 @@ runParser stateRef parser = do
   writeIORef stateRef (SocketParserState socket newRef (-1))
 
   return parsed
-
--- cutParsed :: SocketParserState -> IO SocketParserState
--- cutParsed state = do
---   bstr <- readIORef (state ^. bytestringRef)
---   pos <- state ^. pos
-
---   newRef <- newIORef $ B.drop bstr pos
