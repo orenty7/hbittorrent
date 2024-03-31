@@ -22,10 +22,10 @@ import qualified Network.Simple.TCP as TCP
 import Peer
 import SocketParser as SP
 import qualified System.IO as IO
+import System.Random
 import Torrent
 import Tracker
 import Prelude as P
-import System.Random
 
 data Event = Finished W.Word32 deriving (Show)
 
@@ -36,6 +36,7 @@ type SubpieceIndex = W.Word32
 data GlobalState = GlobalState
   { _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
     _piecesToLoad :: S.Set PieceIndex,
+    _finishedPieces :: S.Set PieceIndex,
     _lock :: STM.TMVar (),
     _randomGen :: StdGen
   }
@@ -74,7 +75,8 @@ log connection message = do
   let l = view lock state
 
   STM.atomically $ STM.takeTMVar l
-  putStrLn message
+  putStr message
+  IO.hFlush IO.stdout
   STM.atomically $ STM.putTMVar l ()
 
 convert :: (Integral a, Integral b) => a -> b
@@ -84,7 +86,6 @@ performHandshake :: IORef SocketParserState -> TCP.Socket -> Handshake -> IO Han
 performHandshake stateRef socket handshake = do
   TCP.send socket $ buildHandshake handshake
   runParser stateRef decodeHandshake
-
 
 init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar GlobalState -> Connection
 init socket torrent stateRef globalEvents globalState =
@@ -98,18 +99,21 @@ requeuePieces connection = do
 
   return ()
 
-calcSubpiecesInPiece :: (Integral a) => Connection ->  PieceIndex -> a
-calcSubpiecesInPiece connection index = let 
-        isLast = index == (connection 
-                              & view (torrent.Torrent.pieces) 
-                              & B.length
-                              & (\x -> x `div` 20 - 1)
-                              & convert)
-        currentPieceLength = if isLast
-          then view (torrent.fileLength) connection `mod` view (torrent.pieceLength) connection
-          else view (torrent.pieceLength) connection
-       in
-    fromInteger $ (currentPieceLength + subpieceSize - 1) `div` subpieceSize
+calcSubpiecesInPiece :: (Integral a) => Connection -> PieceIndex -> a
+calcSubpiecesInPiece connection index =
+  let isLast =
+        index
+          == ( connection
+                 & view (torrent . Torrent.pieces)
+                 & B.length
+                 & (\x -> x `div` 20 - 1)
+                 & convert
+             )
+      currentPieceLength =
+        if isLast
+          then view (torrent . fileLength) connection `mod` view (torrent . pieceLength) connection
+          else view (torrent . pieceLength) connection
+   in fromInteger $ (currentPieceLength + subpieceSize - 1) `div` subpieceSize
 
 addSubpiece :: Connection -> W.Word32 -> W.Word32 -> B.ByteString -> STM.STM ()
 addSubpiece connection index offset subpiece = do
@@ -132,7 +136,7 @@ tryToBuildPiece connection index = do
   let subpieceMap = M.findWithDefault mempty index pieceMap
 
   let subpieces = Data.Maybe.mapMaybe (`M.lookup` subpieceMap) [0 .. calcSubpiecesInPiece connection index - 1]
-  
+
   if P.length subpieces == calcSubpiecesInPiece connection index
     then
       let piece = mconcat subpieces
@@ -162,12 +166,6 @@ react connectionRef = do
   flip onException (requeuePieces connection) $ do
     message <- runParser (view stateRef connection) (messageDecoder $ view torrent connection)
 
-    -- let str = show message
-    -- Loader.log connection $
-    --   if P.length str > 100
-    --     then P.reverse $ P.dropWhile (/= ',') $ P.reverse $ P.take 100 str
-    --     else str
-
     case message of
       Cancel {} ->
         return ()
@@ -196,13 +194,26 @@ react connectionRef = do
           case maybePiece of
             Nothing -> return ()
             Just piece -> do
-              STM.atomically $ STM.writeTChan (view globalEvents connection) $ Finished index
+              finished <- STM.atomically $ do
+                STM.writeTChan (view globalEvents connection) $ Finished index
+                STM.modifyTVar (view globalState connection) (over finishedPieces (S.insert index))
+
+                state <- STM.readTVar (view globalState connection)
+                return $ S.size (view finishedPieces state)
+
               writeIORef connectionRef (over queuedPieces (M.delete index) connection)
 
               IO.withFile (T.unpack $ view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
                 let offset = convert index * view (torrent . pieceLength) connection
                 IO.hSeek handle IO.AbsoluteSeek offset
                 B.hPut handle piece
+              let total =
+                    connection
+                      & view (torrent . Torrent.pieces)
+                      & B.length
+                      & (`div` 20)
+              Loader.log connection $ "\27[2\27[1G" <> "Loading (" <> show finished <> "/" <> show total <> ")"
+
       --
       Request index offset length -> do
         maybePiece <- STM.atomically $ do
@@ -217,7 +228,7 @@ react connectionRef = do
             let bytes = piece & B.drop (convert offset) & B.take (convert length)
             let encoded = buildMessage $ Piece index offset bytes
             TCP.send (view Loader.socket connection) encoded
-      
+
     connection <- readIORef connectionRef
 
     unless ((view chocked connection) || M.size (view queuedPieces connection) > 5) $ do
@@ -228,25 +239,22 @@ react connectionRef = do
           then return Nothing
           else do
             let range = (0, S.size toLoad - 1)
-            let (index, randomGen') = randomR range (view randomGen state) 
+            let (index, randomGen') = randomR range (view randomGen state)
             let piece = S.elemAt index toLoad
-            STM.writeTVar 
-              (view globalState connection) 
-              (state 
-                & (over piecesToLoad (S.deleteAt index))
-                & (set randomGen randomGen'))
+            STM.writeTVar
+              (view globalState connection)
+              ( state
+                  & (over piecesToLoad (S.deleteAt index))
+                  & (set randomGen randomGen')
+              )
 
             return $ Just piece
 
       case pieceToRequest of
         Nothing -> when (M.null (view queuedPieces connection)) $ do
-          Loader.log connection "Finished, breaking connection"
           fail "Done"
-          
         Just index -> do
-          Loader.log connection $ "Requesting piece #" <> show index
           writeIORef connectionRef (over queuedPieces (M.insert index ()) connection)
-
           let subpiecesInPiece = calcSubpiecesInPiece connection index
 
           forM_ [0 .. subpiecesInPiece - 1] $ \subindex -> do
@@ -267,7 +275,6 @@ react connectionRef = do
 
     processEvents $ \case
       Finished piece -> do
-        -- Loader.log connection $ "finished piece " <> show piece
         TCP.send (view Loader.socket connection) $ buildMessage $ Have piece
 
 -- Piece index begin length

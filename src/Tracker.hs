@@ -22,6 +22,11 @@ import Parser
 import Text.URI
 import Torrent (Torrent, announce, fileLength, infoHash)
 import Prelude as P
+import Data.ByteString as B
+
+import qualified Network.Socket as Socket
+import qualified Network.Socket.ByteString as SocketBs
+import Control.Exception (bracket)
 
 type Port = Word32
 
@@ -66,9 +71,9 @@ extractPeer bencode = do
   return (T.unpack $ decodeUtf8 host, fromInteger port)
 
 createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Word32 -> m Request
-createRequestAnnounce torrent announce port = do
+createRequestAnnounce torrent trackerUri port = do
   request <-
-    (parseRequest $ renderStr $ announce)
+    (parseRequest $ renderStr $ trackerUri)
       `orFail` "Can't reparse or announce is not present request"
 
   return $ addToRequestQueryString (buildQuery torrent port) request
@@ -86,8 +91,8 @@ parseResponse bencode = do
   return $ Announce interval (mapMaybe extractPeer bencodedPeers)
 
 getPeers :: (MonadIO m, MonadFail m) => Torrent -> URI -> Word32 -> m Announce
-getPeers torrent announce port = do
-  request <- createRequestAnnounce torrent announce port
+getPeers torrent trackerUri port = do
+  request <- createRequestAnnounce torrent trackerUri port
   response <- httpBS request
   bencode <- parse $ responseBody response
 
@@ -95,3 +100,22 @@ getPeers torrent announce port = do
     `thenFail` \err -> "Response contains failure " <> show err
 
   parseResponse bencode
+
+createUdp = Socket.socket Socket.AF_INET Socket.Datagram Socket.defaultProtocol
+
+
+getPeersUdp :: (MonadIO m, MonadFail m) => Torrent -> URI -> Word32 -> m Announce
+getPeersUdp torrent trackerUri port = do
+  liftIO $ bracket createUdp Socket.close $ \socket -> do 
+    addr:_ <- Socket.getAddrInfo Nothing (Just "bt3.t-ru.org") (Just "http")
+    Socket.connect socket (Socket.addrAddress addr)
+
+    SocketBs.send socket $ B.pack $ [0, 0, 0x04, 0x17, 0x27, 0x10, 0x19, 0x80] <> [0, 0, 0, 0] <>  [1,2,3,4] <> [0,0,0,0]
+    print "sent, waiting for response"
+    resp <- SocketBs.recv socket 16
+    print resp
+    
+    fail "A"
+
+
+

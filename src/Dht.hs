@@ -119,33 +119,39 @@ timeout mcs action = do
   mapM_ killThread [producer, killer]
   return res
 
-find :: Int -> SockAddr -> IO [ByteString]
-find depth current = withUdp $ \socket -> do
-  -- let hash = B.pack [251, 14, 56, 46, 94, 129, 26, 83, 25, 203, 24, 157, 210, 41, 101, 14, 223, 56, 93, 54]
-  let hash = B.pack $ P.reverse [248, 54, 50, 120, 33, 15, 248, 0, 115, 158, 39, 251, 208, 0, 69, 30, 193, 205, 128, 0]
-  -- addr : _ <- getAddrInfo Nothing (Just "dht.libtorrent.org") (Just "25401")
-  putStrLnPar $ show depth <> " " <> show current
-  connect socket current
-  send socket $ getPeers "asdfasdfasdfasdfasdf" hash
-  maybeBencode <- (>>= Bencode.parse) <$> timeout 1000000 (recv socket 4096)
-  bencode <- maybeBencode `orFail` "timeout"
+find :: ByteString -> IO [SockAddr]
+find hash = find' [] root
+  where
+    find' :: [SockAddr] -> SockAddr -> IO [SockAddr]
+    find' path current = withUdp $ \socket -> do
+      when (current `P.elem` path) $ do
+        putStrLnPar "Cycle. Exiting"
+        fail "cycle"
 
-  case (bencode ^? _BDict . (ix "r") . _BDict . (ix "values") . _BList) of
-    Just values -> do
-      putStrLnPar "finished"
-      return (values ^.. each . _BString)
-    _ -> case (bencode ^? _BDict . (ix "r") . _BDict . (ix "nodes") . _BString) of
-      Nothing -> fail "Error"
-      Just packedNodes -> do
-        let nodes = P.map parseNode $ go packedNodes
-              where
-                go packed
-                  | B.length packed == 0 = []
-                  | B.length packed >= 26 = node : go rest
-                  | otherwise = error "Incorrect length"
+      putStrLnPar $ show (P.length path) <> " " <> show current
+      connect socket current
+      send socket $ getPeers "asdfasdfasdfasdfasdf" hash
+      maybeBencode <- (>>= Bencode.parse) <$> timeout 1000000 (recv socket 4096)
+      bencode <- maybeBencode `orFail` "timeout"
+
+      case (bencode ^? _BDict . (ix "r") . _BDict . (ix "values") . _BList) of
+        Just values -> do
+          putStrLnPar "finished"
+          return $ P.map parseIpAndPort (values ^.. each . _BString)
+        _ -> case (bencode ^? _BDict . (ix "r") . _BDict . (ix "nodes") . _BString) of
+          Nothing -> fail "Error"
+          Just packedNodes -> do
+            let nodes = P.map parseNode $ go packedNodes
                   where
-                    (node, rest) = B.splitAt 26 packed
-        -- printPar nodes
-        let addresses = P.map (Dht.find (depth + 1) . view address) nodes
+                    go packed
+                      | B.length packed == 0 = []
+                      | B.length packed >= 26 = node : go rest
+                      | otherwise = error "Incorrect length"
+                      where
+                        (node, rest) = B.splitAt 26 packed
+            -- printPar nodes
 
-        asum $ addresses <> [Dht.find depth current]
+            let newpath = current : path
+            let addresses = P.map (find' newpath . view address) nodes
+
+            asum $ addresses <> [find' path current]
