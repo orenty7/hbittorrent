@@ -32,14 +32,15 @@ getPeers id hash =
   Bencode.encode $
     BDict $
       fromList
-        [ ("t", BString "00"),
-          ("y", BString "q"),
-          ("q", BString "get_peers"),
-          ( "a",
-            BDict $
+        [ ("t", BString "00")
+        , ("y", BString "q")
+        , ("q", BString "get_peers")
+        ,
+          ( "a"
+          , BDict $
               fromList
-                [ ("id", BString id),
-                  ("info_hash", BString hash)
+                [ ("id", BString id)
+                , ("info_hash", BString hash)
                 ]
           )
         ]
@@ -49,14 +50,15 @@ findNode id target =
   Bencode.encode $
     BDict $
       fromList
-        [ ("t", BString "00"),
-          ("y", BString "q"),
-          ("q", BString "find_node"),
-          ( "a",
-            BDict $
+        [ ("t", BString "00")
+        , ("y", BString "q")
+        , ("q", BString "find_node")
+        ,
+          ( "a"
+          , BDict $
               fromList
-                [ ("id", BString id),
-                  ("target", BString target)
+                [ ("id", BString id)
+                , ("target", BString target)
                 ]
           )
         ]
@@ -121,37 +123,37 @@ timeout mcs action = do
 
 find :: ByteString -> IO [SockAddr]
 find hash = find' [] root
-  where
-    find' :: [SockAddr] -> SockAddr -> IO [SockAddr]
-    find' path current = withUdp $ \socket -> do
-      when (current `P.elem` path) $ do
-        putStrLnPar "Cycle. Exiting"
-        fail "cycle"
+ where
+  find' :: [SockAddr] -> SockAddr -> IO [SockAddr]
+  find' path current = withUdp $ \socket -> do
+    when (current `P.elem` path) $ do
+      putStrLnPar "Cycle. Exiting"
+      fail "cycle"
 
-      putStrLnPar $ show (P.length path) <> " " <> show current
-      connect socket current
-      send socket $ getPeers "asdfasdfasdfasdfasdf" hash
-      maybeBencode <- (>>= Bencode.parse) <$> timeout 1000000 (recv socket 4096)
-      bencode <- maybeBencode `orFail` "timeout"
+    putStrLnPar $ show (P.length path) <> " " <> show current
+    connect socket current
+    send socket $ getPeers "asdfasdfasdfasdfasdf" hash
+    maybeBencode <- (>>= Bencode.parse) <$> timeout 1000000 (recv socket 4096)
+    bencode <- maybeBencode `orFail` "timeout"
 
-      case (bencode ^? _BDict . (ix "r") . _BDict . (ix "values") . _BList) of
-        Just values -> do
-          putStrLnPar "finished"
-          return $ P.map parseIpAndPort (values ^.. each . _BString)
-        _ -> case (bencode ^? _BDict . (ix "r") . _BDict . (ix "nodes") . _BString) of
-          Nothing -> fail "Error"
-          Just packedNodes -> do
-            let nodes = P.map parseNode $ go packedNodes
-                  where
-                    go packed
-                      | B.length packed == 0 = []
-                      | B.length packed >= 26 = node : go rest
-                      | otherwise = error "Incorrect length"
-                      where
-                        (node, rest) = B.splitAt 26 packed
-            -- printPar nodes
+    case (bencode ^? _BDict . (ix "r") . _BDict . (ix "values") . _BList) of
+      Just values -> do
+        putStrLnPar "finished"
+        return $ P.map parseIpAndPort (values ^.. each . _BString)
+      _ -> case (bencode ^? _BDict . (ix "r") . _BDict . (ix "nodes") . _BString) of
+        Nothing -> fail "Error"
+        Just packedNodes -> do
+          let nodes = P.map parseNode $ go packedNodes
+               where
+                go packed
+                  | B.length packed == 0 = []
+                  | B.length packed >= 26 = node : go rest
+                  | otherwise = error "Incorrect length"
+                 where
+                  (node, rest) = B.splitAt 26 packed
+          -- printPar nodes
 
-            let newpath = current : path
-            let addresses = P.map (find' newpath . view address) nodes
+          let newpath = current : path
+          let addresses = P.map (find' newpath . view address) nodes
 
-            asum $ addresses <> (if P.null path then [find' [] current] else [])
+          asum $ addresses <> (if P.null path then [find' [] current] else [])

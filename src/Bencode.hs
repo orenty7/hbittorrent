@@ -7,7 +7,7 @@ module Bencode where
 
 import Control.Applicative
 import Control.Lens
-import Control.Monad (forM_, replicateM, when)
+import Control.Monad (forM_, replicateM)
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.ByteString as B
@@ -30,9 +30,9 @@ makePrisms ''Bencode
 
 digit :: (Parser Word8 p) => p Integer
 digit = asum $ P.map parser ['0' .. '9']
-  where
-    parser char = expectChar char $> int char
-    int char = read [char]
+ where
+  parser char = expectChar char $> int char
+  int char = read [char]
 
 unsigned :: (Parser Word8 p) => p Integer
 unsigned = do

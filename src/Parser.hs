@@ -4,19 +4,30 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Parser where
+module Parser (
+  Parser (..),
+  peekByte,
+  peekChar,
+  readByte,
+  readChar,
+  expectByte,
+  expectChar,
+  expectChars,
+  orFail,
+  thenFail,
+) where
 
 import Control.Applicative
 import Control.Monad (MonadPlus, when)
 import Control.Monad.State
 import Data.Functor
-import Data.Maybe (fromMaybe)
 import Data.Word (Word8)
 import Prelude as P
 
 class (Monad m, MonadFail m, Alternative m) => Parser sym m | m -> sym where
   next :: m sym
   peek :: m sym
+  eof :: m Bool
 
 instance (Monad m, MonadFail m, MonadPlus m) => Parser sym (StateT [sym] m) where
   peek = StateT $ \case
@@ -26,6 +37,10 @@ instance (Monad m, MonadFail m, MonadPlus m) => Parser sym (StateT [sym] m) wher
   next = StateT $ \case
     (symbol : rest) -> return (symbol, rest)
     _ -> fail "End of input"
+
+  eof = StateT $ \input -> case input of
+    [] -> return (True, input)
+    _ -> return (False, input)
 
 peekByte :: (Parser Word8 p) => p Word8
 peekByte = peek

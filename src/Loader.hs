@@ -19,7 +19,13 @@ import qualified Data.Set as S
 import qualified Data.Text as T
 import qualified Data.Word as W
 import qualified Network.Simple.TCP as TCP
-import Peer
+import Peer (Handshake, buildHandshake, decodeHandshake)
+import Protocols.Core.Message (PeerMessage (..))
+import Protocols.Message (Message (..))
+import Protocols.Serializable (Serializable (..))
+
+import Control.Monad.State (StateT (runStateT), evalState, evalStateT)
+import Control.Monad.Writer (execWriter)
 import SocketParser as SP
 import qualified System.IO as IO
 import System.Random
@@ -34,24 +40,24 @@ type PieceIndex = W.Word32
 type SubpieceIndex = W.Word32
 
 data Connection = Connection
-  { _socket :: TCP.Socket,
-    _chocked :: Bool,
-    _interested :: Bool,
-    _torrent :: Torrent.Torrent,
-    _pieces :: S.Set PieceIndex,
-    _stateRef :: IORef SP.SocketParserState,
-    _queuedPieces :: M.Map PieceIndex (),
-    _globalEvents :: STM.TChan Event,
-    _globalState :: STM.TVar LoaderState
+  { _socket :: TCP.Socket
+  , _chocked :: Bool
+  , _interested :: Bool
+  , _torrent :: Torrent.Torrent
+  , _pieces :: S.Set PieceIndex
+  , _stateRef :: IORef SP.SocketParserState
+  , _queuedPieces :: M.Map PieceIndex ()
+  , _events :: STM.TChan Event
+  , _globalState :: STM.TVar LoaderState
   }
 
 data LoaderState = LoaderState
-  { _connections :: [Connection],
-    _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
-    _piecesToLoad :: S.Set PieceIndex,
-    _finishedPieces :: S.Set PieceIndex,
-    _lock :: STM.TMVar (),
-    _randomGen :: StdGen
+  { _connections :: [Connection]
+  , _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString)
+  , _piecesToLoad :: S.Set PieceIndex
+  , _finishedPieces :: S.Set PieceIndex
+  , _lock :: STM.TMVar ()
+  , _randomGen :: StdGen
   }
 
 makeLenses ''Connection
@@ -83,8 +89,8 @@ performHandshake stateRef socket handshake = do
   runParser stateRef decodeHandshake
 
 init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
-init socket torrent stateRef globalEvents globalState =
-  Connection socket False False torrent mempty stateRef mempty globalEvents globalState
+init socket torrent stateRef events globalState =
+  Connection socket False False torrent mempty stateRef mempty events globalState
 
 requeuePieces :: Connection -> IO ()
 requeuePieces connection = do
@@ -99,10 +105,10 @@ calcSubpiecesInPiece connection index =
   let isLast =
         index
           == ( connection
-                 & view (torrent . Torrent.pieces)
-                 & B.length
-                 & (\x -> x `div` 20 - 1)
-                 & convert
+                & view (torrent . Torrent.pieces)
+                & B.length
+                & (\x -> x `div` 20 - 1)
+                & convert
              )
       currentPieceLength =
         if isLast
@@ -154,15 +160,26 @@ tryToBuildPiece connection index = do
     else do
       return Nothing
 
+buildMessage :: PeerMessage -> B.ByteString
+buildMessage peerMessage =
+  peerMessage
+    & serialize
+    & execWriter
+    & (\case [message :: Message] -> message; _ -> error "Incorrect serialization")
+    & serialize
+    & execWriter
+    & B.pack
+
 react :: IORef Connection -> IO ()
 react connectionRef = do
   connection <- readIORef connectionRef
 
   flip onException (requeuePieces connection) $ do
-    message <- runParser (view stateRef connection) (messageDecoder $ view torrent connection)
+    (message :: Message) <- runParser (view stateRef connection) parse -- (messageDecoder $ view torrent connection)
+    peerMessage <- evalStateT parse [message]
 
-    case message of
-      Cancel {} ->
+    case peerMessage of
+      Cancel{} ->
         return ()
       KeepAlive ->
         return ()
@@ -174,7 +191,7 @@ react connectionRef = do
         writeIORef connectionRef (set interested True connection)
       NotInterested ->
         writeIORef connectionRef (set interested False connection)
-      Bitfield flags ->
+      BitField flags -> do
         writeIORef connectionRef (set Loader.pieces (S.fromList $ [index | (index, flag) <- P.zip [0 ..] flags, flag]) connection)
       Have piece ->
         writeIORef connectionRef (over Loader.pieces (S.insert piece) connection)
@@ -190,7 +207,7 @@ react connectionRef = do
             Nothing -> return ()
             Just piece -> do
               finished <- STM.atomically $ do
-                STM.writeTChan (view globalEvents connection) $ Finished index
+                STM.writeTChan (view events connection) $ Finished index
                 STM.modifyTVar (view globalState connection) (over finishedPieces (S.insert index))
 
                 state <- STM.readTVar (view globalState connection)
@@ -230,16 +247,19 @@ react connectionRef = do
       pieceToRequest <- STM.atomically $ do
         state <- STM.readTVar (view globalState connection)
         let toLoad = (view piecesToLoad state)
-        if S.size toLoad == 0
+        let peerHas = (view Loader.pieces connection)
+        let candidates = S.intersection toLoad peerHas
+
+        if S.size candidates == 0
           then return Nothing
           else do
-            let range = (0, S.size toLoad - 1)
+            let range = (0, S.size candidates - 1)
             let (index, randomGen') = randomR range (view randomGen state)
-            let piece = S.elemAt index toLoad
+            let piece = S.elemAt index candidates
             STM.writeTVar
               (view globalState connection)
               ( state
-                  & (over piecesToLoad (S.deleteAt index))
+                  & (over piecesToLoad (S.delete piece))
                   & (set randomGen randomGen')
               )
 
@@ -258,7 +278,7 @@ react connectionRef = do
 
       return ()
 
-    let chan = view globalEvents connection
+    let chan = view events connection
 
     let processEvents fn = do
           maybeEvent <- STM.atomically $ STM.tryReadTChan chan

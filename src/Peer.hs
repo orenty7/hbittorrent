@@ -51,11 +51,11 @@ instance Encodable ByteString where
 
 encodeIntegral :: (Integral a) => Int -> a -> [Word8]
 encodeIntegral n x = go n x []
-  where
-    go 0 x words = words
-    go n x words = go (n - 1) (x `div` 256) $ convert (x `mod` 256) : words
+ where
+  go 0 x words = words
+  go n x words = go (n - 1) (x `div` 256) $ convert (x `mod` 256) : words
 
-    convert = toEnum . fromEnum
+  convert = toEnum . fromEnum
 
 decodeIntegral :: (Integral a) => [Word8] -> a
 decodeIntegral words =
@@ -103,15 +103,15 @@ instance Encodable Message where
     B.pack [2]
   encode NotInterested =
     B.pack [3]
-  encode (Have {..}) =
+  encode (Have{..}) =
     B.pack [4] <> encode index
-  encode (Bitfield {..}) =
+  encode (Bitfield{..}) =
     B.pack [5] <> encode flags
-  encode (Request {..}) =
+  encode (Request{..}) =
     B.pack [6] <> mconcat (P.map encode [index, begin, length])
-  encode (Piece {..}) =
+  encode (Piece{..}) =
     B.pack [7] <> encode index <> encode begin <> piece
-  encode (Cancel {..}) =
+  encode (Cancel{..}) =
     B.pack [8] <> mconcat (P.map encode [index, begin, length])
 
 requestPieceLength :: Word32
@@ -183,8 +183,8 @@ messageDecoder torrent = do
           return $ Bitfield $ P.take pieceCount $ bitunpack (B.pack bytes)
         6 -> Request <$> readWord32 <*> readWord32 <*> readWord32
         7 -> Piece <$> readWord32 <*> readWord32 <*> (B.pack <$> replicateM bytesToRead readByte)
-          where
-            bytesToRead = fromInteger $ toInteger $ messageLength - 1 - 4 - 4
+         where
+          bytesToRead = fromInteger $ toInteger $ messageLength - 1 - 4 - 4
         8 -> Cancel <$> readWord32 <*> readWord32 <*> readWord32
         20 -> do
           readByte

@@ -1,6 +1,7 @@
--- {-# LANGUAGE OverloadedStrings #-}
--- {-# LANGUAGE RecordWildCards #-}
--- {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeOperators #-}
 
 module Lib () where
 
@@ -95,3 +96,45 @@ module Lib () where
 --   _ <- customMain initialVty buildVty (Just eventChan) app initialState
 
 --   return ()
+
+{-
+import Control.Applicative
+
+-- import Data.Dynamic
+
+(</>) :: (Alternative a) => a x -> a y -> a (Either x y)
+(</>) a b = (Left <$> a) <|> (Right <$> b)
+
+(<+>) :: (a -> c) -> (b -> c) -> Either a b -> c
+(<+>) = either
+
+type (:/:) a b = Either a b
+
+data A = A
+
+data B = B
+
+data C = C
+
+getA :: IO A
+getA = fail ":(" -- return A
+
+getB :: IO B
+getB = return B
+
+getC :: IO C
+getC = return C
+
+processA :: A -> IO ()
+processA A = putStrLn "A"
+
+processB :: B -> IO ()
+processB B = putStrLn "B"
+
+processC :: C -> IO ()
+processC C = putStrLn "C"
+
+get = getA </> getB </> getC
+
+process = processA <+> processB <+> processC
+-}

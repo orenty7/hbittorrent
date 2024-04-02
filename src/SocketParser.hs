@@ -14,9 +14,9 @@ import Network.Simple.TCP
 import Parser
 
 data SocketParserState = SocketParserState
-  { _socket :: Socket,
-    _bytestringRef :: IORef ByteString,
-    _pos :: Int
+  { _socket :: Socket
+  , _bytestringRef :: IORef ByteString
+  , _pos :: Int
   }
 
 makeLenses ''SocketParserState
