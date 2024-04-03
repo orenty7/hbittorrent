@@ -42,6 +42,7 @@ dependencies:
   - random
 ghc-options:
   - -Wall
+  - -Werror
   - -Wcompat
   - -Widentities
   - -Wincomplete-record-updates

@@ -3,27 +3,39 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Bencode where
+module Bencode (
+  Bencode (..),
+  _BString,
+  _BInteger,
+  _BList,
+  _BDict,
+  --
+  parse,
+  encode,
+) where
 
-import Control.Applicative
-import Control.Lens
+import Parser (Parser (next), expectChar, expectChars)
+
+import qualified Data.ByteString as B
+import qualified Data.Map as M
+
+import Control.Applicative (asum, many, optional, some)
+import Control.Lens (makePrisms)
 import Control.Monad (forM_, replicateM)
-import Control.Monad.State
-import Control.Monad.Writer
-import Data.ByteString as B
-import Data.Functor
-import Data.Map as M
-import Data.Text as T
-import Data.Text.Encoding (encodeUtf8)
+import Control.Monad.State (evalStateT)
+import Control.Monad.Writer (Writer, execWriter, tell)
+import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
+import Data.ByteString.UTF8 (fromString)
+import Data.Functor (($>), (<&>))
 import Data.Word (Word8)
-import Parser
+
 import Prelude as P
 
 data Bencode
-  = BString ByteString
+  = BString B.ByteString
   | BInteger Integer
   | BList [Bencode]
-  | BDict (M.Map ByteString Bencode)
+  | BDict (M.Map B.ByteString Bencode)
   deriving (Eq, Show)
 
 makePrisms ''Bencode
@@ -54,7 +66,7 @@ parseBInteger = do
 
   return $ sign * value
 
-parseBString :: (Parser Word8 p) => p ByteString
+parseBString :: (Parser Word8 p) => p B.ByteString
 parseBString = do
   len <- unsigned
   expectChar ':'
@@ -70,7 +82,7 @@ parseBList = do
 
   return list
 
-parseBDict :: (Parser Word8 p) => p (Map ByteString Bencode)
+parseBDict :: (Parser Word8 p) => p (M.Map B.ByteString Bencode)
 parseBDict = do
   expectChar 'd'
   kvalues <- many $ do
@@ -80,44 +92,49 @@ parseBDict = do
 
   expectChar 'e'
 
-  return $ fromList kvalues
+  return $ M.fromList kvalues
 
 parseBencode :: (Parser Word8 p) => p Bencode
 parseBencode =
-  BInteger <$> parseBInteger
-    <|> BString <$> parseBString
-    <|> BList <$> parseBList
-    <|> BDict <$> parseBDict
+  asum
+    [ BInteger <$> parseBInteger
+    , BString <$> parseBString
+    , BList <$> parseBList
+    , BDict <$> parseBDict
+    ]
 
-parse :: (MonadFail m) => ByteString -> m Bencode
+parse :: (MonadFail m) => B.ByteString -> m Bencode
 parse bstr = case evalStateT parseBencode (B.unpack bstr) of
   [x] -> return x
   [] -> fail "No parse"
   _ -> fail "Bencode parsed ambiguously"
 
-encode :: Bencode -> ByteString
-encode = execWriter . encoder
+encode :: Bencode -> B.ByteString
+encode = B.toStrict . toLazyByteString . execWriter . encoder
 
-encoder :: Bencode -> Writer ByteString ()
+bemit :: B.ByteString -> Writer Builder ()
+bemit = tell . byteString
+
+emit :: String -> Writer Builder ()
+emit = bemit . fromString
+
+encoder :: Bencode -> Writer Builder ()
 encoder (BInteger int) = do
-  tell $ encodeUtf8 "i"
-  tell $ encodeUtf8 $ T.pack $ show int
-  tell $ encodeUtf8 "e"
+  emit "i"
+  emit $ show int
+  emit "e"
 encoder (BString bstr) = do
-  tell $ encodeUtf8 $ T.pack $ show $ B.length bstr
-  tell $ encodeUtf8 ":"
-  tell bstr
+  emit $ show $ B.length bstr
+  emit ":"
+  bemit bstr
 encoder (BList list) = do
-  tell $ encodeUtf8 "l"
+  emit "l"
   forM_ list $ \elem -> do
     encoder elem
-  tell $ encodeUtf8 "e"
+  emit "e"
 encoder (BDict map) = do
-  tell $ encodeUtf8 "d"
-  forM_ (toAscList map) $ \(key, value) -> do
+  emit "d"
+  forM_ (M.toAscList map) $ \(key, value) -> do
     encoder (BString key)
     encoder value
-  tell $ encodeUtf8 "e"
-
-prepare :: String -> [Word8]
-prepare = P.map (toEnum . fromEnum)
+  emit "e"

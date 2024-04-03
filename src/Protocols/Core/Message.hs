@@ -52,6 +52,7 @@ data PeerMessage
       -- | length
       Word.Word32
   deriving (Eq, Show)
+
 liftWriter :: (MonadWriter [Message] m) => Writer [Word.Word8] () -> m ()
 liftWriter writer = tell [Message $ pack $ execWriter writer]
 

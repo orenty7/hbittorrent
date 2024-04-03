@@ -1,43 +1,66 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-module Loader where
+module Loader (
+  Connection (..),
+  init,
+  socket,
+  chocked,
+  interested,
+  torrent,
+  Loader.pieces,
+  stateRef,
+  queuedPieces,
+  events,
+  globalState,
+  --
+  LoaderState (..),
+  connections,
+  subpieceStorage,
+  piecesToLoad,
+  finishedPieces,
+  lock,
+  randomGen,
+  --
+  performHandshake,
+  react,
+  buildMessage,
+) where
 
-import qualified Control.Concurrent
+import Peer (Handshake, buildHandshake, decodeHandshake)
+import Protocols (Message (..), PeerMessage (..), Serializable (..))
+import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
+import Utils (convert)
+
+import qualified SocketParser as SP
+
 import qualified Control.Concurrent.STM as STM
-import Control.Exception
-import Control.Lens (makeLenses, over, set, view, (&), (^.))
-import Control.Monad
 import qualified Crypto.Hash.SHA1 as SHA1
+import qualified Network.Simple.TCP as TCP
+import qualified System.IO as IO
+
 import qualified Data.ByteString as B
-import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map as M
 import qualified Data.Maybe
 import qualified Data.Set as S
-import qualified Data.Text as T
 import qualified Data.Word as W
-import qualified Network.Simple.TCP as TCP
-import Peer (Handshake, buildHandshake, decodeHandshake)
-import Protocols.Core.Message (PeerMessage (..))
-import Protocols.Message (Message (..))
-import Protocols.Serializable (Serializable (..))
 
-import Control.Monad.State (StateT (runStateT), evalState, evalStateT)
+import Control.Exception (onException)
+import Control.Lens (makeLenses, over, set, view, (&))
+import Control.Monad (forM_, unless, void, when)
+import Control.Monad.State (evalStateT)
+import Data.IORef (IORef, readIORef, writeIORef)
+
 import Control.Monad.Writer (execWriter)
-import SocketParser as SP
-import qualified System.IO as IO
-import System.Random
-import Torrent
-import Tracker
-import Prelude as P
+import System.Random (StdGen, randomR)
 
-data Event = Finished W.Word32 deriving (Show)
+import Prelude as P hiding (init)
 
 type PieceIndex = W.Word32
-
 type SubpieceIndex = W.Word32
+
+data Event = Finished W.Word32 deriving (Show)
 
 data Connection = Connection
   { _socket :: TCP.Socket
@@ -65,10 +88,7 @@ makeLenses ''Connection
 makeLenses ''LoaderState
 
 subpieceSize :: (Integral a) => a
-subpieceSize = 2 ^ 14
-
--- type Loader = StateT LoaderState IO
-type PeerId = B.ByteString
+subpieceSize = 2 ^ (14 :: Integer)
 
 log :: Connection -> String -> IO ()
 log connection message = do
@@ -80,15 +100,12 @@ log connection message = do
   IO.hFlush IO.stdout
   STM.atomically $ STM.putTMVar l ()
 
-convert :: (Integral a, Integral b) => a -> b
-convert = fromInteger . toInteger
-
-performHandshake :: IORef SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
+performHandshake :: IORef SP.SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
 performHandshake stateRef socket handshake = do
   TCP.send socket $ buildHandshake handshake
-  runParser stateRef decodeHandshake
+  SP.runParser stateRef decodeHandshake
 
-init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
+init :: TCP.Socket -> Torrent -> IORef SP.SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
 init socket torrent stateRef events globalState =
   Connection socket False False torrent mempty stateRef mempty events globalState
 
@@ -175,7 +192,7 @@ react connectionRef = do
   connection <- readIORef connectionRef
 
   flip onException (requeuePieces connection) $ do
-    (message :: Message) <- runParser (view stateRef connection) parse -- (messageDecoder $ view torrent connection)
+    (message :: Message) <- SP.runParser (view stateRef connection) parse
     peerMessage <- evalStateT parse [message]
 
     case peerMessage of
@@ -215,7 +232,7 @@ react connectionRef = do
 
               writeIORef connectionRef (over queuedPieces (M.delete index) connection)
 
-              IO.withFile (T.unpack $ view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
+              IO.withFile (view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
                 let offset = convert index * view (torrent . pieceLength) connection
                 IO.hSeek handle IO.AbsoluteSeek offset
                 B.hPut handle piece
@@ -285,13 +302,9 @@ react connectionRef = do
           case maybeEvent of
             Nothing -> return ()
             Just event -> do
-              fn event
+              void $ fn event
               processEvents fn
 
     processEvents $ \case
       Finished piece -> do
         TCP.send (view Loader.socket connection) $ buildMessage $ Have piece
-
--- Piece index begin length
--- Cancel
--- Request
