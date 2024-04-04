@@ -8,7 +8,7 @@
 
 module Protocols.Serializable (Serializable, serialize, parse) where
 
-import Parser (Parser (..))
+import Parser.Core (Parser (..))
 
 import qualified Data.Word as Word
 
@@ -40,7 +40,7 @@ instance Serializable Word.Word8 Word.Word32 where
   parse :: (Parser Word.Word8 p) => p Word.Word32
   parse = do
     let decode = fromInteger . foldl (\acc byte -> acc * 256 + toInteger byte) 0
-    decode <$> replicateM 4 Parser.next
+    decode <$> replicateM 4 next
 
 instance Serializable Word.Word8 [Bool] where
   serialize :: (MonadWriter [Word.Word8] w) => [Bool] -> w ()

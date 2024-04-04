@@ -5,7 +5,7 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Parser (
+module Parser.Core (
   Parser (..),
   peekByte,
   peekChar,

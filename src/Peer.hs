@@ -11,7 +11,7 @@
 
 module Peer (Handshake (..), buildHandshake, decodeHandshake) where
 
-import Parser (Parser, expectByte, expectChar, readByte)
+import Parser.Core (Parser, expectByte, expectChar, readByte)
 
 import qualified Data.ByteString as B
 

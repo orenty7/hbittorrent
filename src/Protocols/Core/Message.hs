@@ -10,13 +10,14 @@ module Protocols.Core.Message (PeerMessage (..), pserialize, pparse) where
 import Protocols.Message (Message (..))
 import Protocols.Serializable (Serializable (..))
 
-import qualified Data.Word as Word
-import Parser (Parser (eof, next))
+import Parser.Core (Parser (eof, next))
 
+import Control.Applicative ((<|>))
 import Control.Monad.State (StateT, evalStateT, runStateT)
 import Control.Monad.Writer (MonadWriter (tell), Writer, execWriter)
 import Data.ByteString (ByteString, pack, unpack)
 import Data.Function ((&))
+import Data.Word (Word32, Word8)
 
 data PeerMessage
   = KeepAlive
@@ -26,40 +27,39 @@ data PeerMessage
   | NotInterested
   | Have
       -- | index of piece
-      Word.Word32
+      Word32
   | BitField
       -- | Flags with pieces peer has
       [Bool]
   | Request
       -- | piece index
-      Word.Word32
+      Word32
       -- | begin -- byte offset
-      Word.Word32
+      Word32
       -- | length
-      Word.Word32
+      Word32
   | Piece
       -- | piece index
-      Word.Word32
+      Word32
       -- | begin -- byte offset
-      Word.Word32
+      Word32
       -- | part of the piece
-      ByteString
+      [Word8]
   | Cancel
       -- | piece index
-      Word.Word32
+      Word32
       -- | begin -- byte offset
-      Word.Word32
+      Word32
       -- | length
-      Word.Word32
+      Word32
   deriving (Eq, Show)
+liftWriter :: (MonadWriter [Message] m) => Writer [Word8] () -> m ()
+liftWriter writer = tell [Message $ execWriter writer]
 
-liftWriter :: (MonadWriter [Message] m) => Writer [Word.Word8] () -> m ()
-liftWriter writer = tell [Message $ pack $ execWriter writer]
-
-liftParser :: (Parser Message m) => StateT [Word.Word8] Maybe PeerMessage -> m PeerMessage
+liftParser :: (Parser Message m) => StateT [Word8] Maybe PeerMessage -> m PeerMessage
 liftParser parser = do
   (Message message) <- next
-  case runStateT parser (unpack message) of
+  case runStateT parser message of
     Just (peerMessage, []) -> return peerMessage
     _ -> fail "No parse"
 
@@ -90,7 +90,7 @@ instance Serializable Message PeerMessage where
     tell [7]
     serialize index
     serialize offset
-    tell (unpack subpiece)
+    tell subpiece
   serialize (Cancel index offset length) = liftWriter $ do
     tell [8]
     serialize index
@@ -115,12 +115,8 @@ instance Serializable Message PeerMessage where
           6 -> Request <$> parse <*> parse <*> parse
           7 ->
             Piece <$> parse <*> parse <*> do
-              let loop = do
-                    finished <- eof
-                    if finished
-                      then return []
-                      else (:) <$> next <*> loop
-              pack <$> loop
+              let loop = ((:) <$> next <*> loop) <|> return []
+              loop
           8 -> Cancel <$> parse <*> parse <*> parse
           _ -> fail "Incorrect message"
 

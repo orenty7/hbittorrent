@@ -8,8 +8,8 @@ module Main (main) where
 
 import Bencode (parse)
 import Dht (find)
+import Parser.Socket as SocketParser
 import Peer (Handshake (..))
-import SocketParser
 import Torrent
 import Utils (convert, timeout, withTcp)
 

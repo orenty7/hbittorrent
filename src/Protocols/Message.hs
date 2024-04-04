@@ -1,3 +1,4 @@
+{-# LANGUAGE GHC2021 #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -5,28 +6,27 @@
 
 module Protocols.Message (Message (..)) where
 
+import Parser.Core qualified as Parser
 import Protocols.Serializable (Serializable (parse, serialize))
-
-import qualified Data.ByteString as BS
-import qualified Data.Word as Word
-import qualified Parser
+import Utils (convert)
 
 import Control.Monad (replicateM)
 import Control.Monad.Writer (MonadWriter (tell))
+import Data.Word (Word32, Word8)
 
-newtype Message = Message BS.ByteString deriving (Eq, Show)
+newtype Message = Message [Word8] deriving (Eq, Show)
 
-instance Serializable Word.Word8 Message where
-  parse :: (Parser.Parser Word.Word8 p) => p Message
+instance Serializable Word8 Message where
+  parse :: (Parser.Parser Word8 p) => p Message
   parse = do
-    (messageLength :: Word.Word32) <- parse
+    (messageLength :: Word32) <- parse
     let convert = fromInteger . toInteger
 
-    body <- BS.pack <$> replicateM (convert messageLength) Parser.next
+    body <- replicateM (convert messageLength) Parser.next
     return $ Message body
 
-  serialize :: (MonadWriter [Word.Word8] w) => Message -> w ()
+  serialize :: (MonadWriter [Word8] w) => Message -> w ()
   serialize (Message message) = do
-    let (messageLength :: Word.Word32) = fromInteger $ toInteger $ BS.length message
+    let (messageLength :: Word32) = convert $ length message
     serialize messageLength
-    tell (BS.unpack message)
+    tell message

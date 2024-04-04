@@ -12,9 +12,10 @@ module Bencode (
   --
   parse,
   encode,
+  parser,
 ) where
 
-import Parser (Parser (next), expectChar, expectChars)
+import Parser.Core (Parser (next), expectChar, expectChars)
 
 import qualified Data.ByteString as B
 import qualified Data.Map as M
@@ -102,6 +103,9 @@ parseBencode =
     , BList <$> parseBList
     , BDict <$> parseBDict
     ]
+
+parser :: (Parser Word8 p) => p Bencode
+parser = parseBencode
 
 parse :: (MonadFail m) => B.ByteString -> m Bencode
 parse bstr = case evalStateT parseBencode (B.unpack bstr) of

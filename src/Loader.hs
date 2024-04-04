@@ -33,7 +33,7 @@ import Protocols (Message (..), PeerMessage (..), Serializable (..))
 import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
 import Utils (convert)
 
-import qualified SocketParser as SP
+import qualified Parser.Socket as SP
 
 import qualified Control.Concurrent.STM as STM
 import qualified Crypto.Hash.SHA1 as SHA1
@@ -214,10 +214,10 @@ react connectionRef = do
         writeIORef connectionRef (over Loader.pieces (S.insert piece) connection)
       Piece index offset subpiece -> do
         let offsetIsCorrect = offset `mod` subpieceSize == 0
-        let sizeIsCorrect = B.length subpiece == subpieceSize
+        let sizeIsCorrect = length subpiece == subpieceSize
         when (offsetIsCorrect && sizeIsCorrect) $ do
           maybePiece <- STM.atomically $ do
-            addSubpiece connection index offset subpiece
+            addSubpiece connection index offset $ B.pack subpiece
             tryToBuildPiece connection index
 
           case maybePiece of
@@ -255,7 +255,7 @@ react connectionRef = do
           Nothing -> return ()
           Just piece -> do
             let bytes = piece & B.drop (convert offset) & B.take (convert length)
-            let encoded = buildMessage $ Piece index offset bytes
+            let encoded = buildMessage $ Piece index offset (B.unpack bytes)
             TCP.send (view Loader.socket connection) encoded
 
     connection <- readIORef connectionRef

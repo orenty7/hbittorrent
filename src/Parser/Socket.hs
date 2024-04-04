@@ -3,9 +3,9 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module SocketParser (SocketParser, SocketParserState (..), init, runParser) where
+module Parser.Socket (SocketParser, SocketParserState (..), init, runParser) where
 
-import Parser (Parser (..))
+import Parser.Core (Parser (..))
 import Utils (orFail)
 
 import qualified Data.ByteString as B
@@ -49,7 +49,7 @@ instance Parser Word8 SocketParser where
       then return $ B.index bstr idx
       else do
         sock <- gets (view socket)
-        maybeBytes <- recv sock (2 ^ (20 :: Integer))
+        maybeBytes <- recv sock (2 ^ (14 :: Integer))
         bytes <- maybeBytes `orFail` "End of input"
 
         let newbstr = bstr <> bytes
