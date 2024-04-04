@@ -44,23 +44,22 @@ import qualified Data.ByteString as B
 import qualified Data.Map as M
 import qualified Data.Maybe
 import qualified Data.Set as S
-import qualified Data.Word as W
 
 import Control.Exception (onException)
 import Control.Lens (makeLenses, over, set, view, (&))
 import Control.Monad (forM_, unless, void, when)
 import Control.Monad.State (evalStateT)
-import Data.IORef (IORef, readIORef, writeIORef)
-
 import Control.Monad.Writer (execWriter)
+import Data.IORef (IORef, readIORef, writeIORef)
+import Data.Word (Word32)
 import System.Random (StdGen, randomR)
 
 import Prelude as P hiding (init)
 
-type PieceIndex = W.Word32
-type SubpieceIndex = W.Word32
+type PieceIndex = Word32
+type SubpieceIndex = Word32
 
-data Event = Finished W.Word32 deriving (Show)
+data Event = Finished Word32 deriving (Show)
 
 data Connection = Connection
   { _socket :: TCP.Socket
@@ -133,7 +132,7 @@ calcSubpiecesInPiece connection index =
           else view (torrent . pieceLength) connection
    in fromInteger $ (currentPieceLength + subpieceSize - 1) `div` subpieceSize
 
-addSubpiece :: Connection -> W.Word32 -> W.Word32 -> B.ByteString -> STM.STM ()
+addSubpiece :: Connection -> Word32 -> Word32 -> B.ByteString -> STM.STM ()
 addSubpiece connection index offset subpiece = do
   state <- STM.readTVar (view globalState connection)
 
