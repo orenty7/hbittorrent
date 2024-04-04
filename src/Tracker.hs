@@ -3,58 +3,53 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
-module Tracker where
-
--- import Network.Simple.TCP
+module Tracker (
+  Announce (..),
+  interval,
+  peers,
+  --
+  getPeers,
+) where
 
 import Bencode hiding (encode)
+import Torrent (Torrent, fileLength, infoHash)
+import Utils (orFail, thenFail)
+
+import qualified Data.ByteString.UTF8 as BSU
+import qualified Network.Socket as Socket
+
 import Control.Lens
-import Control.Monad
-import Control.Monad.IO.Class
-import Data.Maybe
-import Data.Text as T
-import Data.Text.Encoding
-import Data.Word
+import Control.Monad.IO.Class (MonadIO (..))
+import Data.ByteString.UTF8 (fromString)
+import Data.Word (Word32)
 import Network.HTTP.Client (Response (responseBody))
 import Network.HTTP.Simple
-import Network.Simple.TCP (HostName)
-import Parser
-import Text.URI
-import Torrent (Torrent, announce, fileLength, infoHash)
-import Prelude as P
-import Data.ByteString as B
+import Text.URI (URI, renderStr)
 
-import qualified Network.Socket as Socket
-import qualified Network.Socket.ByteString as SocketBs
-import Control.Exception (bracket)
+import Prelude as P
 
 type Port = Word32
 
 data Announce = Announce
-  { _interval :: Integer,
-    _peers :: [(HostName, Port)]
+  { _interval :: Integer
+  , _peers :: [Socket.SockAddr]
   }
 
 makeLenses ''Announce
 
-buildQuery :: Torrent -> Word32 -> Query
+buildQuery :: Torrent -> Port -> Query
 buildQuery torrent port =
   P.map
     (Just <$>)
-    [ ("info_hash", torrent ^. infoHash),
-      ("peer_id", "asdfasdfasdfasdfasdf"),
-      ("port", encode $ show port),
-      ("uploaded", encode $ show 0),
-      ("downloaded", encode $ show 0),
-      ("left", encode $ show (torrent ^. fileLength))
+    [ ("info_hash", torrent ^. infoHash)
+    , ("peer_id", "asdfasdfasdfasdfasdf")
+    , ("port", fromString $ show port)
+    , ("uploaded", fromString "0")
+    , ("downloaded", fromString "0")
+    , ("left", fromString $ show (torrent ^. fileLength))
     ]
-  where
-    encode = encodeUtf8 . T.pack
 
-eitherToMaybe :: Either a b -> Maybe b
-eitherToMaybe = either (const Nothing) Just
-
-extractPeer :: (MonadFail m) => Bencode -> m (HostName, Port)
+extractPeer :: (MonadFail m, MonadIO m) => Bencode -> m [Socket.SockAddr]
 extractPeer bencode = do
   bmap <-
     (bencode ^? _BDict)
@@ -68,9 +63,10 @@ extractPeer bencode = do
     (bmap ^? ix "port" . _BInteger)
       `orFail` "Can't extract port"
 
-  return (T.unpack $ decodeUtf8 host, fromInteger port)
+  addrs <- liftIO $ Socket.getAddrInfo Nothing (Just $ BSU.toString host) (Just $ show port)
+  return $ P.map (Socket.addrAddress) addrs
 
-createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Word32 -> m Request
+createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Port -> m Request
 createRequestAnnounce torrent trackerUri port = do
   request <-
     (parseRequest $ renderStr $ trackerUri)
@@ -78,7 +74,7 @@ createRequestAnnounce torrent trackerUri port = do
 
   return $ addToRequestQueryString (buildQuery torrent port) request
 
-parseResponse :: (MonadFail m) => Bencode -> m Announce
+parseResponse :: (MonadIO m, MonadFail m) => Bencode -> m Announce
 parseResponse bencode = do
   interval <-
     (bencode ^? _BDict . ix "interval" . _BInteger)
@@ -88,9 +84,9 @@ parseResponse bencode = do
     (bencode ^? _BDict . ix "peers" . _BList)
       `orFail` "Response doesn't have peers"
 
-  return $ Announce interval (mapMaybe extractPeer bencodedPeers)
+  (Announce interval) . mconcat <$> mapM extractPeer bencodedPeers
 
-getPeers :: (MonadIO m, MonadFail m) => Torrent -> URI -> Word32 -> m Announce
+getPeers :: (MonadIO m, MonadFail m) => Torrent -> URI -> Port -> m Announce
 getPeers torrent trackerUri port = do
   request <- createRequestAnnounce torrent trackerUri port
   response <- httpBS request
@@ -100,22 +96,3 @@ getPeers torrent trackerUri port = do
     `thenFail` \err -> "Response contains failure " <> show err
 
   parseResponse bencode
-
-createUdp = Socket.socket Socket.AF_INET Socket.Datagram Socket.defaultProtocol
-
-
-getPeersUdp :: (MonadIO m, MonadFail m) => Torrent -> URI -> Word32 -> m Announce
-getPeersUdp torrent trackerUri port = do
-  liftIO $ bracket createUdp Socket.close $ \socket -> do 
-    addr:_ <- Socket.getAddrInfo Nothing (Just "bt3.t-ru.org") (Just "http")
-    Socket.connect socket (Socket.addrAddress addr)
-
-    SocketBs.send socket $ B.pack $ [0, 0, 0x04, 0x17, 0x27, 0x10, 0x19, 0x80] <> [0, 0, 0, 0] <>  [1,2,3,4] <> [0,0,0,0]
-    print "sent, waiting for response"
-    resp <- SocketBs.recv socket 16
-    print resp
-    
-    fail "A"
-
-
-

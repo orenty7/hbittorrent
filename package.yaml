@@ -34,14 +34,16 @@ dependencies:
   - network-simple
   - network-uri
   - random
+  - random
   - stm
   - template-haskell
   - text
   - transformers
   - utf8-string
-  - random
 ghc-options:
   - -Wall
+  - -Wno-name-shadowing
+  - -Werror
   - -Wcompat
   - -Widentities
   - -Wincomplete-record-updates

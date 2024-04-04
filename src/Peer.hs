@@ -1,32 +1,35 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+--
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 
-module Peer where
+module Peer (Handshake (..), buildHandshake, decodeHandshake) where
 
-import qualified Bencode
+import Parser.Core (Parser, expectByte, expectChar, readByte)
+
+import qualified Data.ByteString as B
+
 import Control.Lens
-import Control.Monad
+import Control.Monad (forM_, replicateM)
 import Control.Monad.State
-import Control.Monad.State (evalStateT)
 import Control.Monad.Writer
-import Data.ByteString as B
-import Data.Maybe
-import Data.Word
-import Network.Simple.TCP
-import Parser
-import Torrent
+import Data.Maybe (fromMaybe)
+import Data.Word (Word32, Word8)
+
 import Prelude as P
 
-type Host = String
-
-type Port = Word32
-
-data Handshake = Handshake {_extentionFlags :: [Bool], _infoHash :: ByteString, _peerId :: ByteString} deriving (Eq, Show)
+data Handshake = Handshake
+  { _extentionFlags :: [Bool]
+  , _infoHash :: B.ByteString
+  , _peerId :: B.ByteString
+  }
+  deriving (Eq, Show)
 
 makeLenses ''Handshake
 
@@ -39,38 +42,35 @@ data Message
   | Have {index :: Word32}
   | Bitfield {flags :: [Bool]}
   | Request {index :: Word32, begin :: Word32, length :: Word32}
-  | Piece {index :: Word32, begin :: Word32, piece :: ByteString}
+  | Piece {index :: Word32, begin :: Word32, piece :: B.ByteString}
   | Cancel {index :: Word32, begin :: Word32, length :: Word32}
   deriving (Show, Eq)
 
 class Encodable a where
-  encode :: a -> ByteString
+  encode :: a -> B.ByteString
 
-instance Encodable ByteString where
+instance Encodable B.ByteString where
+  encode :: B.ByteString -> B.ByteString
   encode = id
 
 encodeIntegral :: (Integral a) => Int -> a -> [Word8]
 encodeIntegral n x = go n x []
-  where
-    go 0 x words = words
-    go n x words = go (n - 1) (x `div` 256) $ convert (x `mod` 256) : words
+ where
+  go 0 _ words = words
+  go n x words = go (n - 1) (x `div` 256) $ convert (x `mod` 256) : words
 
-    convert = toEnum . fromEnum
-
-decodeIntegral :: (Integral a) => [Word8] -> a
-decodeIntegral words =
-  let go :: [Word8] -> Integer -> Integer
-      go [] num = num
-      go (w : ws) num = go ws (num * 256 + (toInteger w))
-   in fromInteger $ go words 0
+  convert = toEnum . fromEnum
 
 instance Encodable Word8 where
+  encode :: Word8 -> B.ByteString
   encode word8 = B.pack $ encodeIntegral 1 word8
 
 instance Encodable Word32 where
+  encode :: Word32 -> B.ByteString
   encode word32 = B.pack $ encodeIntegral 4 word32
 
 instance Encodable [Bool] where
+  encode :: [Bool] -> B.ByteString
   encode flags = flip evalState flags $ do
     let pop = state $ \case
           [] -> (Nothing, [])
@@ -93,31 +93,7 @@ instance Encodable [Bool] where
 
     B.pack <$> loop []
 
-instance Encodable Message where
-  encode KeepAlive = B.empty
-  encode Choke =
-    B.pack [0]
-  encode Unchoke =
-    B.pack [1]
-  encode Interested =
-    B.pack [2]
-  encode NotInterested =
-    B.pack [3]
-  encode (Have {..}) =
-    B.pack [4] <> encode index
-  encode (Bitfield {..}) =
-    B.pack [5] <> encode flags
-  encode (Request {..}) =
-    B.pack [6] <> mconcat (P.map encode [index, begin, length])
-  encode (Piece {..}) =
-    B.pack [7] <> encode index <> encode begin <> piece
-  encode (Cancel {..}) =
-    B.pack [8] <> mconcat (P.map encode [index, begin, length])
-
-requestPieceLength :: Word32
-requestPieceLength = 2 ^ 14
-
-bitunpack :: ByteString -> [Bool]
+bitunpack :: B.ByteString -> [Bool]
 bitunpack bstr =
   let packed :: Integer
       packed = P.foldr (\byte acc -> acc * 256 + toInteger byte) 0 (B.unpack bstr)
@@ -130,13 +106,13 @@ bitunpack bstr =
           else go (n - 1) (x `div` 2) (True : flags)
    in go ((B.length bstr) * 8) packed []
 
-handshakeBytes :: ByteString
+handshakeBytes :: B.ByteString
 handshakeBytes = B.pack $ (19 :) $ B.unpack "BitTorrent protocol"
 
-buildHandshake :: Handshake -> ByteString
+buildHandshake :: Handshake -> B.ByteString
 buildHandshake handshake = execWriter $ do
   tell handshakeBytes
-  tell $ encode $ (view extentionFlags handshake)
+  tell $ encode $ view extentionFlags handshake
   tell $ handshake ^. Peer.infoHash
   tell $ handshake ^. Peer.peerId
 
@@ -151,48 +127,3 @@ decodeHandshake = do
   peerId <- B.pack <$> replicateM 20 readByte
 
   return $ Handshake extentionFlags infoHash peerId
-
-buildMessage :: Message -> ByteString
-buildMessage message =
-  let encodedMessage = encode message
-      convert :: Int -> Word32
-      convert = fromInteger . toInteger
-   in encode (convert $ B.length encodedMessage) <> encodedMessage
-
-readWord32 :: (Parser Word8 p) => p Word32
-readWord32 = decodeIntegral <$> replicateM 4 readByte
-
-messageDecoder :: (MonadIO p, Parser Word8 p) => Torrent -> p Message
-messageDecoder torrent = do
-  messageLength <- readWord32
-  if messageLength == 0
-    then return KeepAlive
-    else do
-      messageType <- readByte
-      case messageType of
-        0 -> return Choke
-        1 -> return Unchoke
-        2 -> return Interested
-        3 -> return NotInterested
-        4 -> Have <$> readWord32
-        5 -> do
-          let pieceCount = B.length (torrent ^. pieces) `div` 20
-          let bytesToRead = fromInteger $ toInteger (messageLength - 1)
-
-          bytes <- replicateM bytesToRead readByte
-          return $ Bitfield $ P.take pieceCount $ bitunpack (B.pack bytes)
-        6 -> Request <$> readWord32 <*> readWord32 <*> readWord32
-        7 -> Piece <$> readWord32 <*> readWord32 <*> (B.pack <$> replicateM bytesToRead readByte)
-          where
-            bytesToRead = fromInteger $ toInteger $ messageLength - 1 - 4 - 4
-        8 -> Cancel <$> readWord32 <*> readWord32 <*> readWord32
-        20 -> do
-          readByte
-          bytes <- B.pack <$> replicateM (fromInteger $ toInteger messageLength - 1) readByte
-          let (Just bencode) = Bencode.parse bytes
-
-          liftIO $ print bencode
-          -- liftIO $ putStrLn $ "Cannot decode message " <> show bytes
-
-          fail "Incorrect message"
-        _ -> fail "Cannot decode message"

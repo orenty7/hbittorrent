@@ -1,57 +1,85 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
-module Loader where
+module Loader (
+  Connection (..),
+  init,
+  socket,
+  chocked,
+  interested,
+  torrent,
+  Loader.pieces,
+  stateRef,
+  queuedPieces,
+  events,
+  globalState,
+  --
+  LoaderState (..),
+  connections,
+  subpieceStorage,
+  piecesToLoad,
+  finishedPieces,
+  lock,
+  randomGen,
+  --
+  performHandshake,
+  react,
+  buildMessage,
+) where
 
-import qualified Control.Concurrent
+import Peer (Handshake, buildHandshake, decodeHandshake)
+import Protocols (Message (..), PeerMessage (..), Serializable (..))
+import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
+import Utils (convert)
+
+import qualified Parser.Socket as SP
+
 import qualified Control.Concurrent.STM as STM
-import Control.Exception
-import Control.Lens (makeLenses, over, set, view, (&), (^.))
-import Control.Monad
 import qualified Crypto.Hash.SHA1 as SHA1
+import qualified Network.Simple.TCP as TCP
+import qualified System.IO as IO
+
 import qualified Data.ByteString as B
-import Data.IORef (IORef, readIORef, writeIORef)
 import qualified Data.Map as M
 import qualified Data.Maybe
 import qualified Data.Set as S
-import qualified Data.Text as T
-import qualified Data.Word as W
-import qualified Network.Simple.TCP as TCP
-import Peer
-import SocketParser as SP
-import qualified System.IO as IO
-import System.Random
-import Torrent
-import Tracker
-import Prelude as P
 
-data Event = Finished W.Word32 deriving (Show)
+import Control.Exception (onException)
+import Control.Lens (makeLenses, over, set, view, (&))
+import Control.Monad (forM_, unless, void, when)
+import Control.Monad.State (evalStateT)
+import Control.Monad.Writer (execWriter)
+import Data.IORef (IORef, readIORef, writeIORef)
+import Data.Word (Word32)
+import System.Random (StdGen, randomR)
 
-type PieceIndex = W.Word32
+import Prelude as P hiding (init)
 
-type SubpieceIndex = W.Word32
+type PieceIndex = Word32
+type SubpieceIndex = Word32
+
+data Event = Finished Word32 deriving (Show)
 
 data Connection = Connection
-  { _socket :: TCP.Socket,
-    _chocked :: Bool,
-    _interested :: Bool,
-    _torrent :: Torrent.Torrent,
-    _pieces :: S.Set PieceIndex,
-    _stateRef :: IORef SP.SocketParserState,
-    _queuedPieces :: M.Map PieceIndex (),
-    _globalEvents :: STM.TChan Event,
-    _globalState :: STM.TVar LoaderState
+  { _socket :: TCP.Socket
+  , _chocked :: Bool
+  , _interested :: Bool
+  , _torrent :: Torrent.Torrent
+  , _pieces :: S.Set PieceIndex
+  , _stateRef :: IORef SP.SocketParserState
+  , _queuedPieces :: M.Map PieceIndex ()
+  , _events :: STM.TChan Event
+  , _globalState :: STM.TVar LoaderState
   }
 
 data LoaderState = LoaderState
-  { _connections :: [Connection],
-    _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString),
-    _piecesToLoad :: S.Set PieceIndex,
-    _finishedPieces :: S.Set PieceIndex,
-    _lock :: STM.TMVar (),
-    _randomGen :: StdGen
+  { _connections :: [Connection]
+  , _subpieceStorage :: M.Map PieceIndex (M.Map SubpieceIndex B.ByteString)
+  , _piecesToLoad :: S.Set PieceIndex
+  , _finishedPieces :: S.Set PieceIndex
+  , _lock :: STM.TMVar ()
+  , _randomGen :: StdGen
   }
 
 makeLenses ''Connection
@@ -59,10 +87,7 @@ makeLenses ''Connection
 makeLenses ''LoaderState
 
 subpieceSize :: (Integral a) => a
-subpieceSize = 2 ^ 14
-
--- type Loader = StateT LoaderState IO
-type PeerId = B.ByteString
+subpieceSize = 2 ^ (14 :: Integer)
 
 log :: Connection -> String -> IO ()
 log connection message = do
@@ -74,17 +99,14 @@ log connection message = do
   IO.hFlush IO.stdout
   STM.atomically $ STM.putTMVar l ()
 
-convert :: (Integral a, Integral b) => a -> b
-convert = fromInteger . toInteger
-
-performHandshake :: IORef SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
+performHandshake :: IORef SP.SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
 performHandshake stateRef socket handshake = do
   TCP.send socket $ buildHandshake handshake
-  runParser stateRef decodeHandshake
+  SP.runParser stateRef decodeHandshake
 
-init :: TCP.Socket -> Torrent -> IORef SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
-init socket torrent stateRef globalEvents globalState =
-  Connection socket False False torrent mempty stateRef mempty globalEvents globalState
+init :: TCP.Socket -> Torrent -> IORef SP.SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
+init socket torrent stateRef events globalState =
+  Connection socket False False torrent mempty stateRef mempty events globalState
 
 requeuePieces :: Connection -> IO ()
 requeuePieces connection = do
@@ -99,10 +121,10 @@ calcSubpiecesInPiece connection index =
   let isLast =
         index
           == ( connection
-                 & view (torrent . Torrent.pieces)
-                 & B.length
-                 & (\x -> x `div` 20 - 1)
-                 & convert
+                & view (torrent . Torrent.pieces)
+                & B.length
+                & (\x -> x `div` 20 - 1)
+                & convert
              )
       currentPieceLength =
         if isLast
@@ -110,7 +132,7 @@ calcSubpiecesInPiece connection index =
           else view (torrent . pieceLength) connection
    in fromInteger $ (currentPieceLength + subpieceSize - 1) `div` subpieceSize
 
-addSubpiece :: Connection -> W.Word32 -> W.Word32 -> B.ByteString -> STM.STM ()
+addSubpiece :: Connection -> Word32 -> Word32 -> B.ByteString -> STM.STM ()
 addSubpiece connection index offset subpiece = do
   state <- STM.readTVar (view globalState connection)
 
@@ -154,15 +176,26 @@ tryToBuildPiece connection index = do
     else do
       return Nothing
 
+buildMessage :: PeerMessage -> B.ByteString
+buildMessage peerMessage =
+  peerMessage
+    & serialize
+    & execWriter
+    & (\case [message :: Message] -> message; _ -> error "Incorrect serialization")
+    & serialize
+    & execWriter
+    & B.pack
+
 react :: IORef Connection -> IO ()
 react connectionRef = do
   connection <- readIORef connectionRef
 
   flip onException (requeuePieces connection) $ do
-    message <- runParser (view stateRef connection) (messageDecoder $ view torrent connection)
+    (message :: Message) <- SP.runParser (view stateRef connection) parse
+    peerMessage <- evalStateT parse [message]
 
-    case message of
-      Cancel {} ->
+    case peerMessage of
+      Cancel{} ->
         return ()
       KeepAlive ->
         return ()
@@ -174,23 +207,23 @@ react connectionRef = do
         writeIORef connectionRef (set interested True connection)
       NotInterested ->
         writeIORef connectionRef (set interested False connection)
-      Bitfield flags ->
+      BitField flags -> do
         writeIORef connectionRef (set Loader.pieces (S.fromList $ [index | (index, flag) <- P.zip [0 ..] flags, flag]) connection)
       Have piece ->
         writeIORef connectionRef (over Loader.pieces (S.insert piece) connection)
       Piece index offset subpiece -> do
         let offsetIsCorrect = offset `mod` subpieceSize == 0
-        let sizeIsCorrect = B.length subpiece == subpieceSize
+        let sizeIsCorrect = length subpiece == subpieceSize
         when (offsetIsCorrect && sizeIsCorrect) $ do
           maybePiece <- STM.atomically $ do
-            addSubpiece connection index offset subpiece
+            addSubpiece connection index offset $ B.pack subpiece
             tryToBuildPiece connection index
 
           case maybePiece of
             Nothing -> return ()
             Just piece -> do
               finished <- STM.atomically $ do
-                STM.writeTChan (view globalEvents connection) $ Finished index
+                STM.writeTChan (view events connection) $ Finished index
                 STM.modifyTVar (view globalState connection) (over finishedPieces (S.insert index))
 
                 state <- STM.readTVar (view globalState connection)
@@ -198,7 +231,7 @@ react connectionRef = do
 
               writeIORef connectionRef (over queuedPieces (M.delete index) connection)
 
-              IO.withFile (T.unpack $ view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
+              IO.withFile (view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
                 let offset = convert index * view (torrent . pieceLength) connection
                 IO.hSeek handle IO.AbsoluteSeek offset
                 B.hPut handle piece
@@ -221,7 +254,7 @@ react connectionRef = do
           Nothing -> return ()
           Just piece -> do
             let bytes = piece & B.drop (convert offset) & B.take (convert length)
-            let encoded = buildMessage $ Piece index offset bytes
+            let encoded = buildMessage $ Piece index offset (B.unpack bytes)
             TCP.send (view Loader.socket connection) encoded
 
     connection <- readIORef connectionRef
@@ -230,16 +263,19 @@ react connectionRef = do
       pieceToRequest <- STM.atomically $ do
         state <- STM.readTVar (view globalState connection)
         let toLoad = (view piecesToLoad state)
-        if S.size toLoad == 0
+        let peerHas = (view Loader.pieces connection)
+        let candidates = S.intersection toLoad peerHas
+
+        if S.size candidates == 0
           then return Nothing
           else do
-            let range = (0, S.size toLoad - 1)
+            let range = (0, S.size candidates - 1)
             let (index, randomGen') = randomR range (view randomGen state)
-            let piece = S.elemAt index toLoad
+            let piece = S.elemAt index candidates
             STM.writeTVar
               (view globalState connection)
               ( state
-                  & (over piecesToLoad (S.deleteAt index))
+                  & (over piecesToLoad (S.delete piece))
                   & (set randomGen randomGen')
               )
 
@@ -258,20 +294,16 @@ react connectionRef = do
 
       return ()
 
-    let chan = view globalEvents connection
+    let chan = view events connection
 
     let processEvents fn = do
           maybeEvent <- STM.atomically $ STM.tryReadTChan chan
           case maybeEvent of
             Nothing -> return ()
             Just event -> do
-              fn event
+              void $ fn event
               processEvents fn
 
     processEvents $ \case
       Finished piece -> do
         TCP.send (view Loader.socket connection) $ buildMessage $ Have piece
-
--- Piece index begin length
--- Cancel
--- Request

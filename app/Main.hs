@@ -1,46 +1,42 @@
-{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
 
 module Main (main) where
 
-import Bencode
--- import Network.Socket
--- import Network.Socket.ByteString
+import Bencode (parse)
+import Dht (find)
+import Parser.Socket as SocketParser
+import Peer (Handshake (..))
+import Torrent
+import Utils (convert, timeout, withTcp)
 
--- import Loader
+import qualified Loader
+import qualified Tracker
 
-import Control.Applicative
-import Control.Concurrent
-import Control.Concurrent.STM
-import Control.Exception
-import Control.Lens
-import Control.Monad
-import Control.Monad.State
+import qualified Control.Concurrent.STM as STM
 import qualified Crypto.Hash.SHA1 as SHA1
 import qualified Data.ByteString as B
-import Data.IORef
-import Data.List
-import Data.Map as M
-import Data.Maybe (isJust)
-import Data.Set as S
-import qualified Data.Text as T
-import Data.Word
-import Dht
-import Loader
-import Loader (convert)
+import qualified Data.IORef as IORef
+import qualified Data.Set as S
 import qualified Network.Socket as Socket
 import qualified Network.Socket.ByteString as SocketBs
-import Peer
-import SocketParser
-import System.Environment (getArgs)
+import qualified Protocols.Core.Message as CoreMessage
 import qualified System.IO as IO
-import System.Random
-import Text.URI
-import Torrent
-import Tracker
+
+import Control.Applicative (asum)
+import Control.Concurrent (forkFinally, newEmptyMVar, newMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, try)
+import Control.Lens
+import Control.Monad (forM, forM_, forever, join, replicateM, void, when, (>=>))
+import Data.Either (fromRight)
+import Data.List (partition)
+import System.Environment (getArgs)
+import System.Exit (exitFailure)
+import System.Random (newStdGen)
+
 import Prelude as P
 
 readTorrent :: String -> IO (Maybe Torrent)
@@ -50,22 +46,18 @@ readTorrent name = do
     bencode <- parse bstr
     mkTorrent bencode
 
-eval :: [a] -> [a]
-eval [] = []
-eval list@(x : xs) = (eval xs) `seq` x `seq` list
-
-createTcp = Socket.socket Socket.AF_INET Socket.Stream Socket.defaultProtocol
-
-withTcp action = bracket createTcp Socket.close action
-
 main :: IO ()
 main = do
   args <- getArgs
-  let filename = case args of
-        [filename] -> filename
-        _ -> "debian-12.4.0-amd64-DVD-1.iso.torrent"
 
-  (Just torrent) <- readTorrent filename -- "Большой куш Snatch (Гай Ричи Guy Ritchie) [2000, Великобритания, США, криминал, комедия, боевик, WEB-DL 2160p, HDR10, Dolby Vi [rutracker-6375066].torrent"
+  filename <- case args of
+    [filename] -> return filename
+    _ -> do
+      putStrLn "Incorrect arguments."
+      putStrLn "expected: hbittorrent <torrent>"
+      exitFailure
+
+  (Just torrent) <- readTorrent filename
   lock <- newMVar ()
 
   let putStrPar str = do
@@ -76,12 +68,10 @@ main = do
 
   let putStrLnPar str = putStrPar (str <> "\n")
 
-  -- case (view announce torrent) of
-  -- (Just announceInfo) -> do
   let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
 
-  flags <- IO.withFile (T.unpack $ view name torrent) IO.ReadWriteMode $ \handle -> do
-    counterRef <- newIORef 0
+  flags <- IO.withFile (view name torrent) IO.ReadWriteMode $ \handle -> do
+    counterRef <- IORef.newIORef (0 :: Integer)
 
     flags <- forM [0 .. nPieces - 1] $ \index -> do
       let hash = torrent ^. Torrent.piece index
@@ -92,38 +82,53 @@ main = do
       let flag = SHA1.hash piece == hash
 
       when flag $ do
-        modifyIORef counterRef (+ 1)
+        IORef.modifyIORef counterRef (+ 1)
 
       when (index `mod` 50 == 0) $ do
-        counter <- readIORef counterRef
+        counter <- IORef.readIORef counterRef
         putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show index <> ")"
 
       return $! flag
 
-    counter <- readIORef counterRef
+    counter <- IORef.readIORef counterRef
     putStrPar $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
-    return $ eval flags
+    return flags
 
-  let (finished, toLoad) = Data.List.partition fst (P.zip flags [0 ..])
+  let (finished, toLoad) = partition fst (P.zip flags [0 ..])
   putStrLnPar ""
-  putStrLnPar "Connecting to the DHT..."
-  peers <- Dht.find (view Torrent.infoHash torrent)
+
+  peers <- do
+    let getAnnouncePeers = do
+          putStrLnPar "Connecting to the Tracker..."
+          announce <- case view announce torrent of
+            Nothing -> fail "No announce"
+            Just (Left url) -> Tracker.getPeers torrent url 6881
+            Just (Right urlss) -> do
+              let urls = join urlss
+              asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
+          return (view Tracker.peers announce)
+
+        getDhtPeers = do
+          putStrLnPar "Connecting to the DHT..."
+          Dht.find (view Torrent.infoHash torrent)
+
+    let orEmpty :: Either SomeException [Socket.SockAddr] -> [Socket.SockAddr]
+        orEmpty = fromRight []
+
+    announcePeers <- try (timeout 30_000_000 getAnnouncePeers) <&> orEmpty
+    dhtPeers <- try (timeout 120_000_000 getDhtPeers) <&> orEmpty
+
+    return $ announcePeers <> dhtPeers
+
   putStrLnPar $ "peers: " <> show peers
-  -- announce <- case announceInfo of
-  --   Left url -> Tracker.getPeers torrent url 6881
-  --   Right urlss -> do
-  --     let flatten urlss = urlss >>= id
-  --     let urls = flatten urlss
 
-  --     asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
-
-  globalLock <- newTMVarIO ()
-  globalEvents <- atomically newTChan
+  globalLock <- STM.newTMVarIO ()
+  globalEvents <- STM.atomically STM.newTChan
   globalRandomGen <- newStdGen
   globalState <-
-    newTVarIO $
-      LoaderState
-        []
+    STM.newTVarIO $
+      Loader.LoaderState
+        mempty
         mempty
         (S.fromList $ P.map snd toLoad)
         (S.fromList $ P.map snd finished)
@@ -136,37 +141,44 @@ main = do
 
   forM_ (P.zip waiters peers) $ \(waiter, peer) -> do
     let action = withTcp $ \socket -> do
-          -- addr : _ <- Socket.getAddrInfo Nothing (Just host) (Just $ show port)
           Socket.connect socket peer
 
-          stateRef <- socket & (SocketParser.init >=> newIORef)
+          stateRef <- socket & (SocketParser.init >=> IORef.newIORef)
 
-          let handshake = Handshake (replicate (8 * 8 - 20) False <> [True] <> replicate 19 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
+          let handshake = Handshake (replicate 64 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-          handshake <- performHandshake stateRef socket handshake
-          let flags = (view extentionFlags handshake)
+          void $ Loader.performHandshake stateRef socket handshake
 
-          when ((P.take 8 $ P.drop (5 * 8) flags) !! 4) $ do
-            putStrLnPar "Supports extention protocol!"
+          eventsChan <- STM.atomically $ STM.dupTChan globalEvents
+          connectionRef <- IORef.newIORef $ Loader.init socket torrent stateRef eventsChan globalState
 
-          chan <- atomically $ dupTChan globalEvents
-          connectionRef <- newIORef $ Loader.init socket torrent stateRef chan globalState
+          void $
+            SocketBs.send socket $
+              Loader.buildMessage $
+                CoreMessage.BitField $
+                  P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
 
-          SocketBs.send socket $ buildMessage $ Bitfield $ P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
-          SocketBs.send socket $ buildMessage Unchoke
-          SocketBs.send socket $ buildMessage Interested
+          void $
+            SocketBs.send socket $
+              Loader.buildMessage CoreMessage.Unchoke
+          void $
+            SocketBs.send socket $
+              Loader.buildMessage CoreMessage.Interested
 
-          forever $ react connectionRef
+          forever $ Loader.react connectionRef
 
-    let unlockWaiter = putMVar waiter ()
+    let unlockWaiter = do
+          putMVar waiter ()
 
     void $ forkFinally action (const unlockWaiter)
 
   forM_ waiters takeMVar
-  finished <- atomically $ do
-    state <- readTVar globalState
-    return $ P.null (view piecesToLoad state)
+  finished <- STM.atomically $ do
+    state <- STM.readTVar globalState
+    return $ P.null (view Loader.piecesToLoad state)
 
   if finished
     then putStrLnPar "Finished"
-    else putStrLnPar "Something went wrong, please restart the torrent"
+    else do
+      putStrLnPar "Something went wrong, please restart the torrent"
+      exitFailure

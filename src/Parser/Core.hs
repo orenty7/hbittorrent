@@ -1,31 +1,47 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Parser where
+module Parser.Core (
+  Parser (..),
+  peekByte,
+  peekChar,
+  readByte,
+  readChar,
+  expectByte,
+  expectChar,
+  expectChars,
+) where
 
-import Control.Applicative
+import Control.Applicative (Alternative, asum)
 import Control.Monad (MonadPlus, when)
-import Control.Monad.State
-import Data.Functor
-import Data.Maybe (fromMaybe)
+import Control.Monad.State (StateT (StateT))
+import Data.Functor (($>), (<&>))
 import Data.Word (Word8)
-import Prelude as P
 
 class (Monad m, MonadFail m, Alternative m) => Parser sym m | m -> sym where
   next :: m sym
   peek :: m sym
+  eof :: m Bool
 
 instance (Monad m, MonadFail m, MonadPlus m) => Parser sym (StateT [sym] m) where
+  peek :: StateT [sym] m sym
   peek = StateT $ \case
     symbols@(symbol : _) -> return (symbol, symbols)
     _ -> fail "End of input"
 
+  next :: StateT [sym] m sym
   next = StateT $ \case
     (symbol : rest) -> return (symbol, rest)
     _ -> fail "End of input"
+
+  eof :: StateT [sym] m Bool
+  eof = StateT $ \input -> case input of
+    [] -> return (True, input)
+    _ -> return (False, input)
 
 peekByte :: (Parser Word8 p) => p Word8
 peekByte = peek
@@ -52,14 +68,4 @@ expectChar char = do
     fail "Incorrect char"
 
 expectChars :: (Parser Word8 p) => [Char] -> p Char
-expectChars chars = asum $ P.map (\char -> expectChar char $> char) chars
-
-orFail :: (MonadFail m) => Maybe a -> String -> m a
-orFail value message = case value of
-  Just x -> return x
-  Nothing -> fail message
-
-thenFail :: (MonadFail m) => Maybe a -> (a -> String) -> m ()
-thenFail value createMessage = case value of
-  Just x -> fail $ createMessage x
-  Nothing -> return ()
+expectChars chars = asum $ map (\char -> expectChar char $> char) chars
