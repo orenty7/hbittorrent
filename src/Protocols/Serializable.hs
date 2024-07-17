@@ -6,29 +6,32 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Protocols.Serializable (Serializable, serialize, parse) where
+module Protocols.Serializable (Serializable, Serializer, serialize, parse) where
 
-import Parser.Core (Parser (..))
+import Parser.Core (Parser, eof, next)
 
 import qualified Data.Word as Word
 
 import Control.Monad (replicateM, unless)
-import Control.Monad.Writer (MonadWriter (tell))
+import Control.Monad.Writer (Writer, tell)
 import Data.Bits (Bits (testBit))
 
-class Serializable sym a where
-  serialize :: (MonadWriter [sym] w) => a -> w ()
-  parse :: (Parser sym p) => p a
+type Serializer = Writer [Word.Word8]
 
-instance Serializable Word.Word8 Word.Word8 where
-  serialize :: (MonadWriter [Word.Word8] w) => Word.Word8 -> w ()
+
+class Serializable a where
+  serialize ::  a -> Serializer ()
+  parse :: Parser a
+
+instance Serializable Word.Word8 where
+  serialize :: Word.Word8 -> Serializer ()
   serialize word8 = tell [word8]
 
-  parse :: (Parser Word.Word8 p) => p Word.Word8
+  parse :: Parser Word.Word8
   parse = next
 
-instance Serializable Word.Word8 Word.Word32 where
-  serialize :: (MonadWriter [Word.Word8] w) => Word.Word32 -> w ()
+instance Serializable Word.Word32 where
+  serialize :: Word.Word32 -> Serializer ()
   serialize word32 = do
     let go 0 _ = return ()
         go n x = do
@@ -37,13 +40,13 @@ instance Serializable Word.Word8 Word.Word32 where
 
     go (4 :: Int) (toInteger word32)
 
-  parse :: (Parser Word.Word8 p) => p Word.Word32
+  parse :: Parser Word.Word32
   parse = do
     let decode = fromInteger . foldl (\acc byte -> acc * 256 + toInteger byte) 0
     decode <$> replicateM 4 next
 
-instance Serializable Word.Word8 [Bool] where
-  serialize :: (MonadWriter [Word.Word8] w) => [Bool] -> w ()
+instance Serializable [Bool] where
+  serialize :: [Bool] -> Serializer ()
   serialize flags = do
     let (subflags, flags') = splitAt 8 flags
 
@@ -51,7 +54,7 @@ instance Serializable Word.Word8 [Bool] where
     unless (null flags') $ do
       serialize flags'
 
-  parse :: (Parser Word.Word8 p) => p [Bool]
+  parse :: Parser [Bool]
   parse = do
     finished <- eof
     if finished

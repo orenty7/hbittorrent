@@ -15,7 +15,7 @@ module Bencode (
   parser,
 ) where
 
-import Parser.Core (Parser (next), expectChar, expectChars)
+import Parser.Core (Parser, next, expectChar, expectChars)
 
 import qualified Data.ByteString as B
 import qualified Data.Map as M
@@ -28,7 +28,6 @@ import Control.Monad.Writer (Writer, execWriter, tell)
 import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.UTF8 (fromString)
 import Data.Functor (($>), (<&>))
-import Data.Word (Word8)
 
 import Prelude as P
 
@@ -41,18 +40,18 @@ data Bencode
 
 makePrisms ''Bencode
 
-digit :: (Parser Word8 p) => p Integer
+digit :: Parser Integer
 digit = asum $ P.map parser ['0' .. '9']
  where
   parser char = expectChar char $> int char
   int char = read [char]
 
-unsigned :: (Parser Word8 p) => p Integer
+unsigned :: Parser Integer
 unsigned = do
   digits <- some digit
   return $ P.foldl (\acc digit -> acc * 10 + digit) 0 digits
 
-parseBInteger :: (Parser Word8 p) => p Integer
+parseBInteger :: Parser Integer
 parseBInteger = do
   expectChar 'i'
 
@@ -67,7 +66,7 @@ parseBInteger = do
 
   return $ sign * value
 
-parseBString :: (Parser Word8 p) => p B.ByteString
+parseBString :: Parser B.ByteString
 parseBString = do
   len <- unsigned
   expectChar ':'
@@ -75,7 +74,7 @@ parseBString = do
 
   return $ B.pack string
 
-parseBList :: (Parser Word8 p) => p [Bencode]
+parseBList :: Parser [Bencode]
 parseBList = do
   expectChar 'l'
   list <- many parseBencode
@@ -83,7 +82,7 @@ parseBList = do
 
   return list
 
-parseBDict :: (Parser Word8 p) => p (M.Map B.ByteString Bencode)
+parseBDict :: Parser (M.Map B.ByteString Bencode)
 parseBDict = do
   expectChar 'd'
   kvalues <- many $ do
@@ -95,7 +94,7 @@ parseBDict = do
 
   return $ M.fromList kvalues
 
-parseBencode :: (Parser Word8 p) => p Bencode
+parseBencode :: Parser Bencode
 parseBencode =
   asum
     [ BInteger <$> parseBInteger
@@ -104,14 +103,13 @@ parseBencode =
     , BDict <$> parseBDict
     ]
 
-parser :: (Parser Word8 p) => p Bencode
+parser :: Parser Bencode
 parser = parseBencode
 
 parse :: (MonadFail m) => B.ByteString -> m Bencode
 parse bstr = case evalStateT parseBencode (B.unpack bstr) of
-  [x] -> return x
-  [] -> fail "No parse"
-  _ -> fail "Bencode parsed ambiguously"
+  Just x -> return x
+  Nothing -> fail "No parse"
 
 encode :: Bencode -> B.ByteString
 encode = B.toStrict . toLazyByteString . execWriter . encoder

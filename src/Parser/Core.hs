@@ -6,66 +6,63 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Parser.Core (
-  Parser (..),
-  peekByte,
-  peekChar,
-  readByte,
+  Parser,
+  peek,
+  next,
+  eof,
   readChar,
   expectByte,
   expectChar,
   expectChars,
+  runParser
 ) where
 
-import Control.Applicative (Alternative, asum)
-import Control.Monad (MonadPlus, when)
-import Control.Monad.State (StateT (StateT))
+import Control.Applicative (asum)
+import Control.Monad (when)
+import Control.Monad.State (StateT (StateT, runStateT))
 import Data.Functor (($>), (<&>))
 import Data.Word (Word8)
 
-class (Monad m, MonadFail m, Alternative m) => Parser sym m | m -> sym where
-  next :: m sym
-  peek :: m sym
-  eof :: m Bool
 
-instance (Monad m, MonadFail m, MonadPlus m) => Parser sym (StateT [sym] m) where
-  peek :: StateT [sym] m sym
-  peek = StateT $ \case
-    symbols@(symbol : _) -> return (symbol, symbols)
-    _ -> fail "End of input"
+type Parser = StateT [Word8] Maybe
 
-  next :: StateT [sym] m sym
-  next = StateT $ \case
-    (symbol : rest) -> return (symbol, rest)
-    _ -> fail "End of input"
 
-  eof :: StateT [sym] m Bool
-  eof = StateT $ \input -> case input of
-    [] -> return (True, input)
-    _ -> return (False, input)
+peek :: Parser Word8
+peek = StateT $ \case
+  symbols@(symbol : _) -> return (symbol, symbols)
+  _ -> fail "End of input"
 
-peekByte :: (Parser Word8 p) => p Word8
-peekByte = peek
+next :: Parser Word8
+next = StateT $ \case
+  (symbol : rest) -> return (symbol, rest)
+  _ -> fail "End of input"
 
-readByte :: (Parser Word8 p) => p Word8
-readByte = next
+eof :: Parser Bool
+eof = StateT $ \input -> case input of
+  [] -> return (True, input)
+  _ -> return (False, input)
 
-peekChar :: (Parser Word8 p) => p Char
-peekChar = peek <&> toEnum . fromEnum
-
-readChar :: (Parser Word8 p) => p Char
+readChar :: Parser Char
 readChar = next <&> toEnum . fromEnum
 
-expectByte :: (Parser Word8 p) => Word8 -> p ()
+expectByte :: Word8 -> Parser ()
 expectByte byte = do
-  b <- readByte
+  b <- next
   when (b /= byte) $ do
     fail "Incorrect byte"
 
-expectChar :: (Parser Word8 p) => Char -> p ()
+expectChar :: Char -> Parser ()
 expectChar char = do
   ch <- readChar
   when (ch /= char) $ do
     fail "Incorrect char"
 
-expectChars :: (Parser Word8 p) => [Char] -> p Char
+expectChars :: [Char] -> Parser Char
 expectChars chars = asum $ map (\char -> expectChar char $> char) chars
+
+-- runParser :: IORef SocketParserState -> SocketParser t -> IO t
+
+runParser :: MonadFail m => Parser t -> [Word8] -> m t 
+runParser parser bytes = case runStateT parser bytes of
+  Just (result, []) -> return result
+  _ -> fail "Parsing failed" 

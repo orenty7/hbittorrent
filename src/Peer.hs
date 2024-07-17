@@ -9,9 +9,9 @@
 --
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 
-module Peer (Handshake (..), buildHandshake, decodeHandshake) where
+module Peer (Handshake (..), buildHandshake, decodeHandshake, handshakeSize) where
 
-import Parser.Core (Parser, expectByte, expectChar, readByte)
+import Parser.Core (Parser, expectByte, expectChar, next)
 
 import qualified Data.ByteString as B
 
@@ -109,6 +109,9 @@ bitunpack bstr =
 handshakeBytes :: B.ByteString
 handshakeBytes = B.pack $ (19 :) $ B.unpack "BitTorrent protocol"
 
+handshakeSize :: Int
+handshakeSize = 1 + 19 + 8 + 20 + 20
+
 buildHandshake :: Handshake -> B.ByteString
 buildHandshake handshake = execWriter $ do
   tell handshakeBytes
@@ -116,14 +119,14 @@ buildHandshake handshake = execWriter $ do
   tell $ handshake ^. Peer.infoHash
   tell $ handshake ^. Peer.peerId
 
-decodeHandshake :: (Parser Word8 p) => p Handshake
+decodeHandshake :: Parser Handshake
 decodeHandshake = do
   expectByte 19
   forM_ ("BitTorrent protocol" :: String) $ \char -> do
     expectChar char
 
-  extentionFlags <- bitunpack <$> B.pack <$> replicateM 8 readByte
-  infoHash <- B.pack <$> replicateM 20 readByte
-  peerId <- B.pack <$> replicateM 20 readByte
+  extentionFlags <- bitunpack <$> B.pack <$> replicateM 8 next
+  infoHash <- B.pack <$> replicateM 20 next
+  peerId <- B.pack <$> replicateM 20 next
 
   return $ Handshake extentionFlags infoHash peerId

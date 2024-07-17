@@ -10,7 +10,6 @@ module Loader (
   interested,
   torrent,
   Loader.pieces,
-  stateRef,
   queuedPieces,
   events,
   globalState,
@@ -28,12 +27,11 @@ module Loader (
   buildMessage,
 ) where
 
-import Peer (Handshake, buildHandshake, decodeHandshake)
-import Protocols (Message (..), PeerMessage (..), Serializable (..))
+import Peer (Handshake, buildHandshake, decodeHandshake, handshakeSize)
+import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
+import Parser.Core(runParser)
 import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
 import Utils (convert)
-
-import qualified Parser.Socket as SP
 
 import qualified Control.Concurrent.STM as STM
 import qualified Crypto.Hash.SHA1 as SHA1
@@ -48,8 +46,8 @@ import qualified Data.Set as S
 import Control.Exception (onException)
 import Control.Lens (makeLenses, over, set, view, (&))
 import Control.Monad (forM_, unless, void, when)
-import Control.Monad.State (evalStateT)
 import Control.Monad.Writer (execWriter)
+
 import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Word (Word32)
 import System.Random (StdGen, randomR)
@@ -67,7 +65,6 @@ data Connection = Connection
   , _interested :: Bool
   , _torrent :: Torrent.Torrent
   , _pieces :: S.Set PieceIndex
-  , _stateRef :: IORef SP.SocketParserState
   , _queuedPieces :: M.Map PieceIndex ()
   , _events :: STM.TChan Event
   , _globalState :: STM.TVar LoaderState
@@ -99,14 +96,16 @@ log connection message = do
   IO.hFlush IO.stdout
   STM.atomically $ STM.putTMVar l ()
 
-performHandshake :: IORef SP.SocketParserState -> TCP.Socket -> Handshake -> IO Handshake
-performHandshake stateRef socket handshake = do
+performHandshake :: TCP.Socket -> Handshake -> IO Handshake
+performHandshake socket handshake = do
   TCP.send socket $ buildHandshake handshake
-  SP.runParser stateRef decodeHandshake
 
-init :: TCP.Socket -> Torrent -> IORef SP.SocketParserState -> STM.TChan Event -> STM.TVar LoaderState -> Connection
-init socket torrent stateRef events globalState =
-  Connection socket False False torrent mempty stateRef mempty events globalState
+  Just rawHandshake <- TCP.recv socket handshakeSize
+  runParser decodeHandshake (B.unpack rawHandshake)
+
+init :: TCP.Socket -> Torrent -> STM.TChan Event -> STM.TVar LoaderState -> Connection
+init socket torrent events globalState =
+  Connection socket False False torrent mempty mempty events globalState
 
 requeuePieces :: Connection -> IO ()
 requeuePieces connection = do
@@ -177,23 +176,30 @@ tryToBuildPiece connection index = do
       return Nothing
 
 buildMessage :: PeerMessage -> B.ByteString
-buildMessage peerMessage =
-  peerMessage
-    & serialize
-    & execWriter
-    & (\case [message :: Message] -> message; _ -> error "Incorrect serialization")
-    & serialize
-    & execWriter
-    & B.pack
+buildMessage peerMessage = (B.pack $ execWriter $ serialize header) <> payload where 
+  payload = B.pack $ execWriter (serialize peerMessage)
+  header = MessageHeader $ fromIntegral $ B.length payload
+  -- peerMessage
+  --   & serialize
+  --   & execWriter
+  --   & (\case [message :: Message] -> message; _ -> error "Incorrect serialization")
+  --   & serialize
+  --   & execWriter
+  --   & B.pack
 
 react :: IORef Connection -> IO ()
 react connectionRef = do
   connection <- readIORef connectionRef
 
   flip onException (requeuePieces connection) $ do
-    (message :: Message) <- SP.runParser (view stateRef connection) parse
-    peerMessage <- evalStateT parse [message]
+    Just rawHeader <- TCP.recv (view socket connection) headerSize
+    (MessageHeader size) <- runParser parse (B.unpack rawHeader)
 
+    Just payload <- TCP.recv (view socket connection) (fromIntegral size)
+
+    peerMessage <- runParser parse (B.unpack payload)
+    Loader.log connection $ "Message: " <> take 20 (show peerMessage) <> "\n"
+    
     case peerMessage of
       Cancel{} ->
         return ()
