@@ -9,12 +9,12 @@ module Protocols.Core.Message (PeerMessage (..)) where
 
 import Protocols.Serializable (Serializable (..), Serializer)
 
-import Parser.Core (Parser, eof, next)
+import Parser.Core (Parser, eof, next, rest)
 
-import Control.Applicative ((<|>))
 import Control.Monad.Writer (MonadWriter (tell))
 
-import Data.Word (Word32, Word8)
+import Data.Word (Word32)
+import Data.ByteString (ByteString, unpack)
 
 data PeerMessage
   = KeepAlive
@@ -41,7 +41,7 @@ data PeerMessage
       -- | begin -- byte offset
       Word32
       -- | part of the piece
-      [Word8]
+      ByteString
   | Cancel
       -- | piece index
       Word32
@@ -78,7 +78,7 @@ instance Serializable PeerMessage where
     tell [7]
     serialize index
     serialize offset
-    tell subpiece
+    tell $ unpack subpiece
   serialize (Cancel index offset length) = do
     tell [8]
     serialize index
@@ -101,9 +101,6 @@ instance Serializable PeerMessage where
           4 -> Have <$> parse
           5 -> BitField <$> parse
           6 -> Request <$> parse <*> parse <*> parse
-          7 ->
-            Piece <$> parse <*> parse <*> do
-              let loop = ((:) <$> next <*> loop) <|> return []
-              loop
+          7 -> Piece <$> parse <*> parse <*> rest
           8 -> Cancel <$> parse <*> parse <*> parse
           _ -> fail "Incorrect message"

@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main (main) where
 
@@ -165,10 +166,13 @@ main = do
 
           forever $ Loader.react connectionRef
 
-    let unlockWaiter = do
+    let unlockWaiter (e :: Either SomeException ()) = do
+          putStrLnPar "Peer died"
+          putStrLnPar $ show e
+
           putMVar waiter ()
 
-    void $ forkFinally action (const unlockWaiter)
+    void $ forkFinally action (unlockWaiter)
 
   forM_ waiters takeMVar
   finished <- STM.atomically $ do

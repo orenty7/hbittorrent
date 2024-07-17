@@ -15,15 +15,14 @@ module Bencode (
   parser,
 ) where
 
-import Parser.Core (Parser, next, expectChar, expectChars)
+import Parser.Core (Parser, expectChar, expectChars, runParser, nextN)
 
 import qualified Data.ByteString as B
 import qualified Data.Map as M
 
 import Control.Applicative (asum, many, optional, some)
 import Control.Lens (makePrisms)
-import Control.Monad (forM_, replicateM)
-import Control.Monad.State (evalStateT)
+import Control.Monad (forM_)
 import Control.Monad.Writer (Writer, execWriter, tell)
 import Data.ByteString.Builder (Builder, byteString, toLazyByteString)
 import Data.ByteString.UTF8 (fromString)
@@ -70,9 +69,9 @@ parseBString :: Parser B.ByteString
 parseBString = do
   len <- unsigned
   expectChar ':'
-  string <- replicateM (fromInteger len) next
+  string <- nextN (fromInteger len)
 
-  return $ B.pack string
+  return string
 
 parseBList :: Parser [Bencode]
 parseBList = do
@@ -107,7 +106,7 @@ parser :: Parser Bencode
 parser = parseBencode
 
 parse :: (MonadFail m) => B.ByteString -> m Bencode
-parse bstr = case evalStateT parseBencode (B.unpack bstr) of
+parse bstr = case runParser parseBencode bstr of
   Just x -> return x
   Nothing -> fail "No parse"
 

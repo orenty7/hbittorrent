@@ -47,6 +47,7 @@ import Control.Exception (onException)
 import Control.Lens (makeLenses, over, set, view, (&))
 import Control.Monad (forM_, unless, void, when)
 import Control.Monad.Writer (execWriter)
+import Control.Monad.Except
 
 import Data.IORef (IORef, readIORef, writeIORef)
 import Data.Word (Word32)
@@ -96,12 +97,26 @@ log connection message = do
   IO.hFlush IO.stdout
   STM.atomically $ STM.putTMVar l ()
 
+recv :: TCP.Socket -> Int -> ExceptT () IO B.ByteString
+recv socket n = do
+  maybeChunk <- TCP.recv socket n
+
+  case maybeChunk of
+    Nothing -> throwError ()
+    Just chunk -> do 
+      let loaded = B.length chunk
+
+      if loaded == n
+        then return chunk
+        else (chunk <>) <$> recv socket (n - loaded)
+
+
 performHandshake :: TCP.Socket -> Handshake -> IO Handshake
 performHandshake socket handshake = do
   TCP.send socket $ buildHandshake handshake
 
-  Just rawHandshake <- TCP.recv socket handshakeSize
-  runParser decodeHandshake (B.unpack rawHandshake)
+  Right rawHandshake <- runExceptT $ recv socket handshakeSize
+  runParser decodeHandshake rawHandshake
 
 init :: TCP.Socket -> Torrent -> STM.TChan Event -> STM.TVar LoaderState -> Connection
 init socket torrent events globalState =
@@ -179,26 +194,18 @@ buildMessage :: PeerMessage -> B.ByteString
 buildMessage peerMessage = (B.pack $ execWriter $ serialize header) <> payload where 
   payload = B.pack $ execWriter (serialize peerMessage)
   header = MessageHeader $ fromIntegral $ B.length payload
-  -- peerMessage
-  --   & serialize
-  --   & execWriter
-  --   & (\case [message :: Message] -> message; _ -> error "Incorrect serialization")
-  --   & serialize
-  --   & execWriter
-  --   & B.pack
 
 react :: IORef Connection -> IO ()
 react connectionRef = do
   connection <- readIORef connectionRef
 
   flip onException (requeuePieces connection) $ do
-    Just rawHeader <- TCP.recv (view socket connection) headerSize
-    (MessageHeader size) <- runParser parse (B.unpack rawHeader)
+    Right rawHeader <- runExceptT $ recv (view socket connection) headerSize
+    (MessageHeader size) <- runParser parse rawHeader
 
-    Just payload <- TCP.recv (view socket connection) (fromIntegral size)
+    Right payload <- runExceptT $ recv (view socket connection) (fromIntegral size)
 
-    peerMessage <- runParser parse (B.unpack payload)
-    Loader.log connection $ "Message: " <> take 20 (show peerMessage) <> "\n"
+    peerMessage <- runParser parse payload
     
     case peerMessage of
       Cancel{} ->
@@ -219,10 +226,10 @@ react connectionRef = do
         writeIORef connectionRef (over Loader.pieces (S.insert piece) connection)
       Piece index offset subpiece -> do
         let offsetIsCorrect = offset `mod` subpieceSize == 0
-        let sizeIsCorrect = length subpiece == subpieceSize
+        let sizeIsCorrect = B.length subpiece == subpieceSize
         when (offsetIsCorrect && sizeIsCorrect) $ do
           maybePiece <- STM.atomically $ do
-            addSubpiece connection index offset $ B.pack subpiece
+            addSubpiece connection index offset subpiece
             tryToBuildPiece connection index
 
           case maybePiece of
@@ -260,7 +267,7 @@ react connectionRef = do
           Nothing -> return ()
           Just piece -> do
             let bytes = piece & B.drop (convert offset) & B.take (convert length)
-            let encoded = buildMessage $ Piece index offset (B.unpack bytes)
+            let encoded = buildMessage $ Piece index offset bytes
             TCP.send (view Loader.socket connection) encoded
 
     connection <- readIORef connectionRef
