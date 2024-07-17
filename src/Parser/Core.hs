@@ -6,66 +6,77 @@
 {-# LANGUAGE UndecidableInstances #-}
 
 module Parser.Core (
-  Parser (..),
-  peekByte,
-  peekChar,
-  readByte,
+  Parser,
+  peek,
+  next,
+  nextN,
+  rest,
+  eof,
   readChar,
   expectByte,
   expectChar,
   expectChars,
+  runParser
 ) where
 
-import Control.Applicative (Alternative, asum)
-import Control.Monad (MonadPlus, when)
-import Control.Monad.State (StateT (StateT))
+import qualified Data.ByteString as B
+
+import Control.Applicative (asum)
+import Control.Monad (when)
+import Control.Monad.State (StateT (StateT, runStateT))
 import Data.Functor (($>), (<&>))
 import Data.Word (Word8)
 
-class (Monad m, MonadFail m, Alternative m) => Parser sym m | m -> sym where
-  next :: m sym
-  peek :: m sym
-  eof :: m Bool
+type Parser = StateT (B.ByteString, Int) Maybe
 
-instance (Monad m, MonadFail m, MonadPlus m) => Parser sym (StateT [sym] m) where
-  peek :: StateT [sym] m sym
-  peek = StateT $ \case
-    symbols@(symbol : _) -> return (symbol, symbols)
-    _ -> fail "End of input"
 
-  next :: StateT [sym] m sym
-  next = StateT $ \case
-    (symbol : rest) -> return (symbol, rest)
-    _ -> fail "End of input"
+peek :: Parser Word8
+peek = StateT $ \(bstr, index) -> do
+  char <- bstr B.!? index
+  return (char, (bstr, index))
 
-  eof :: StateT [sym] m Bool
-  eof = StateT $ \input -> case input of
-    [] -> return (True, input)
-    _ -> return (False, input)
+next :: Parser Word8
+next = StateT $ \(bstr, index) -> do
+  char <- bstr B.!? index
+  return (char, (bstr, index + 1))
 
-peekByte :: (Parser Word8 p) => p Word8
-peekByte = peek
+nextN :: Int -> Parser B.ByteString
+nextN n = StateT $ \(bstr, index) -> do
+  if index + n > B.length bstr
+    then Nothing
+    else Just $ (B.take n (B.drop index bstr), (bstr, index + n))
 
-readByte :: (Parser Word8 p) => p Word8
-readByte = next
+rest :: Parser B.ByteString
+rest = StateT $ \(bstr, index) -> return (B.drop index bstr, (bstr, B.length bstr))
 
-peekChar :: (Parser Word8 p) => p Char
-peekChar = peek <&> toEnum . fromEnum
 
-readChar :: (Parser Word8 p) => p Char
+eof :: Parser Bool
+eof = StateT $ \(bstr, index) -> return (B.length bstr == index, (bstr, index))
+
+readChar :: Parser Char
 readChar = next <&> toEnum . fromEnum
 
-expectByte :: (Parser Word8 p) => Word8 -> p ()
+expectByte :: Word8 -> Parser ()
 expectByte byte = do
-  b <- readByte
+  b <- next
   when (b /= byte) $ do
     fail "Incorrect byte"
 
-expectChar :: (Parser Word8 p) => Char -> p ()
+expectChar :: Char -> Parser ()
 expectChar char = do
   ch <- readChar
   when (ch /= char) $ do
     fail "Incorrect char"
 
-expectChars :: (Parser Word8 p) => [Char] -> p Char
+expectChars :: [Char] -> Parser Char
 expectChars chars = asum $ map (\char -> expectChar char $> char) chars
+
+-- runParser :: IORef SocketParserState -> SocketParser t -> IO t
+
+runParser :: MonadFail m => Parser t -> B.ByteString -> m t 
+runParser parser bstr = case runStateT parser (bstr, 0) of
+  Nothing -> fail "Parsing failed" 
+  Just (result, (bstr, pos)) -> 
+    if B.length bstr == pos 
+      then return result 
+      else fail "Bytes left"

@@ -5,19 +5,16 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoFieldSelectors #-}
 
-module Protocols.Core.Message (PeerMessage (..), pserialize, pparse) where
+module Protocols.Core.Message (PeerMessage (..)) where
 
-import Protocols.Message (Message (..))
-import Protocols.Serializable (Serializable (..))
+import Protocols.Serializable (Serializable (..), Serializer)
 
-import Parser.Core (Parser (eof, next))
+import Parser.Core (Parser, eof, next, rest)
 
-import Control.Applicative ((<|>))
-import Control.Monad.State (StateT, evalStateT, runStateT)
-import Control.Monad.Writer (MonadWriter (tell), Writer, execWriter)
-import Data.ByteString (ByteString, pack, unpack)
-import Data.Function ((&))
-import Data.Word (Word32, Word8)
+import Control.Monad.Writer (MonadWriter (tell))
+
+import Data.Word (Word32)
+import Data.ByteString (ByteString, unpack)
 
 data PeerMessage
   = KeepAlive
@@ -44,7 +41,7 @@ data PeerMessage
       -- | begin -- byte offset
       Word32
       -- | part of the piece
-      [Word8]
+      ByteString
   | Cancel
       -- | piece index
       Word32
@@ -53,52 +50,43 @@ data PeerMessage
       -- | length
       Word32
   deriving (Eq, Show)
-liftWriter :: (MonadWriter [Message] m) => Writer [Word8] () -> m ()
-liftWriter writer = tell [Message $ execWriter writer]
 
-liftParser :: (Parser Message m) => StateT [Word8] Maybe PeerMessage -> m PeerMessage
-liftParser parser = do
-  (Message message) <- next
-  case runStateT parser message of
-    Just (peerMessage, []) -> return peerMessage
-    _ -> fail "No parse"
-
-instance Serializable Message PeerMessage where
-  serialize :: (MonadWriter [Message] w) => PeerMessage -> w ()
-  serialize KeepAlive = liftWriter $ do
+instance Serializable PeerMessage where
+  serialize :: PeerMessage -> Serializer ()
+  serialize KeepAlive = do
     return ()
-  serialize Choke = liftWriter $ do
+  serialize Choke = do
     tell [0]
-  serialize Unchoke = liftWriter $ do
+  serialize Unchoke = do
     tell [1]
-  serialize Interested = liftWriter $ do
+  serialize Interested = do
     tell [2]
-  serialize NotInterested = liftWriter $ do
+  serialize NotInterested = do
     tell [3]
-  serialize (Have index) = liftWriter $ do
+  serialize (Have index) = do
     tell [4]
     serialize index
-  serialize (BitField flags) = liftWriter $ do
+  serialize (BitField flags) = do
     tell [5]
     serialize flags
-  serialize (Request index offset length) = liftWriter $ do
+  serialize (Request index offset length) = do
     tell [6]
     serialize index
     serialize offset
     serialize length
-  serialize (Piece index offset subpiece) = liftWriter $ do
+  serialize (Piece index offset subpiece) = do
     tell [7]
     serialize index
     serialize offset
-    tell subpiece
-  serialize (Cancel index offset length) = liftWriter $ do
+    tell $ unpack subpiece
+  serialize (Cancel index offset length) = do
     tell [8]
     serialize index
     serialize offset
     serialize length
 
-  parse :: (Parser Message p) => p PeerMessage
-  parse = liftParser $ do
+  parse :: Parser PeerMessage
+  parse = do
     isEmpty <- eof
     if isEmpty
       then return KeepAlive
@@ -113,28 +101,6 @@ instance Serializable Message PeerMessage where
           4 -> Have <$> parse
           5 -> BitField <$> parse
           6 -> Request <$> parse <*> parse <*> parse
-          7 ->
-            Piece <$> parse <*> parse <*> do
-              let loop = ((:) <$> next <*> loop) <|> return []
-              loop
+          7 -> Piece <$> parse <*> parse <*> rest
           8 -> Cancel <$> parse <*> parse <*> parse
           _ -> fail "Incorrect message"
-
-pserialize :: PeerMessage -> ByteString
-pserialize (peerMessage :: PeerMessage) =
-  peerMessage
-    & serialize
-    & execWriter
-    & (\case [message :: Message] -> message; _ -> error "incorrect serialization")
-    & serialize
-    & execWriter
-    & pack
-
-pparse :: ByteString -> Maybe PeerMessage
-pparse bstr =
-  bstr
-    & unpack
-    & evalStateT parse
-    & (\case Just (message :: Message) -> message; _ -> error "no parse")
-    & (: [])
-    & evalStateT parse

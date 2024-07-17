@@ -3,12 +3,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main (main) where
 
 import Bencode (parse)
 import Dht (find)
-import Parser.Socket as SocketParser
 import Peer (Handshake (..))
 import Torrent
 import Utils (convert, timeout, withTcp)
@@ -30,7 +30,7 @@ import Control.Applicative (asum)
 import Control.Concurrent (forkFinally, newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, try)
 import Control.Lens
-import Control.Monad (forM, forM_, forever, join, replicateM, void, when, (>=>))
+import Control.Monad (forM, forM_, forever, join, replicateM, void, when)
 import Data.Either (fromRight)
 import Data.List (partition)
 import System.Environment (getArgs)
@@ -143,14 +143,12 @@ main = do
     let action = withTcp $ \socket -> do
           Socket.connect socket peer
 
-          stateRef <- socket & (SocketParser.init >=> IORef.newIORef)
-
           let handshake = Handshake (replicate 64 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
-          void $ Loader.performHandshake stateRef socket handshake
-
+          void $ Loader.performHandshake socket handshake
+          
           eventsChan <- STM.atomically $ STM.dupTChan globalEvents
-          connectionRef <- IORef.newIORef $ Loader.init socket torrent stateRef eventsChan globalState
+          connectionRef <- IORef.newIORef $ Loader.init socket torrent eventsChan globalState
 
           void $
             SocketBs.send socket $
@@ -167,10 +165,13 @@ main = do
 
           forever $ Loader.react connectionRef
 
-    let unlockWaiter = do
+    let unlockWaiter (e :: Either SomeException ()) = do
+          putStrLnPar "Peer died"
+          putStrLnPar $ show e
+
           putMVar waiter ()
 
-    void $ forkFinally action (const unlockWaiter)
+    void $ forkFinally action unlockWaiter
 
   forM_ waiters takeMVar
   finished <- STM.atomically $ do
