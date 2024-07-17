@@ -11,7 +11,7 @@
 
 module Peer (Handshake (..), buildHandshake, decodeHandshake, handshakeSize) where
 
-import Parser.Core (Parser, expectByte, expectChar, next)
+import Parser.Core (Parser, expectByte, expectChar, nextN)
 
 import qualified Data.ByteString as B
 
@@ -125,8 +125,8 @@ decodeHandshake = do
   forM_ ("BitTorrent protocol" :: String) $ \char -> do
     expectChar char
 
-  extentionFlags <- bitunpack <$> B.pack <$> replicateM 8 next
-  infoHash <- B.pack <$> replicateM 20 next
-  peerId <- B.pack <$> replicateM 20 next
+  extentionFlags <- bitunpack <$> nextN 8
+  infoHash <- nextN 20
+  peerId <- nextN 20
 
   return $ Handshake extentionFlags infoHash peerId

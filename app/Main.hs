@@ -146,7 +146,6 @@ main = do
           let handshake = Handshake (replicate 64 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
 
           void $ Loader.performHandshake socket handshake
-          putStrLn "Handshake performed"
           
           eventsChan <- STM.atomically $ STM.dupTChan globalEvents
           connectionRef <- IORef.newIORef $ Loader.init socket torrent eventsChan globalState
@@ -172,7 +171,7 @@ main = do
 
           putMVar waiter ()
 
-    void $ forkFinally action (unlockWaiter)
+    void $ forkFinally action unlockWaiter
 
   forM_ waiters takeMVar
   finished <- STM.atomically $ do
