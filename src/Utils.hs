@@ -57,8 +57,8 @@ timeout mcs action = do
     threadDelay mcs
     putMVar var $ Left $ SomeException TimeoutException
 
-  exceptionOrres <- takeMVar var
+  exceptionOrRes <- takeMVar var
   mapM_ killThread [producer, killer]
-  case exceptionOrres of
+  case exceptionOrRes of
     Right res -> return res
     Left exception -> throwIO exception

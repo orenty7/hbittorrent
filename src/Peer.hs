@@ -25,7 +25,7 @@ import Data.Word (Word32, Word8)
 import Prelude as P
 
 data Handshake = Handshake
-  { _extentionFlags :: [Bool]
+  { _extensionFlags :: [Bool]
   , _infoHash :: B.ByteString
   , _peerId :: B.ByteString
   }
@@ -36,11 +36,11 @@ makeLenses ''Handshake
 data Message
   = KeepAlive
   | Choke
-  | Unchoke
+  | UnChoke
   | Interested
   | NotInterested
   | Have {index :: Word32}
-  | Bitfield {flags :: [Bool]}
+  | BitField {flags :: [Bool]}
   | Request {index :: Word32, begin :: Word32, length :: Word32}
   | Piece {index :: Word32, begin :: Word32, piece :: B.ByteString}
   | Cancel {index :: Word32, begin :: Word32, length :: Word32}
@@ -93,8 +93,8 @@ instance Encodable [Bool] where
 
     B.pack <$> loop []
 
-bitunpack :: B.ByteString -> [Bool]
-bitunpack bstr =
+bitUnpack :: B.ByteString -> [Bool]
+bitUnpack bstr =
   let packed :: Integer
       packed = P.foldr (\byte acc -> acc * 256 + toInteger byte) 0 (B.unpack bstr)
 
@@ -115,7 +115,7 @@ handshakeSize = 1 + 19 + 8 + 20 + 20
 buildHandshake :: Handshake -> B.ByteString
 buildHandshake handshake = execWriter $ do
   tell handshakeBytes
-  tell $ encode $ view extentionFlags handshake
+  tell $ encode $ view extensionFlags handshake
   tell $ handshake ^. Peer.infoHash
   tell $ handshake ^. Peer.peerId
 
@@ -125,8 +125,8 @@ decodeHandshake = do
   forM_ ("BitTorrent protocol" :: String) $ \char -> do
     expectChar char
 
-  extentionFlags <- bitunpack <$> nextN 8
+  extensionFlags <- bitUnpack <$> nextN 8
   infoHash <- nextN 20
   peerId <- nextN 20
 
-  return $ Handshake extentionFlags infoHash peerId
+  return $ Handshake extensionFlags infoHash peerId
