@@ -6,41 +6,39 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module Protocols.Serializable (Serializable, Serializer, serialize, parse) where
+module Protocols.Serializable (Serializable, Serializer, serialize, parse, runSerializer) where
 
 import Parser.Core (Parser, eof, next)
 
-import qualified Data.Word as Word
+import qualified Data.Word as W
+import qualified Data.ByteString as B
+import qualified Data.ByteString.Builder as B
 
 import Control.Monad (replicateM, unless)
-import Control.Monad.Writer (Writer, tell)
+import Control.Monad.Writer (Writer, tell, execWriter)
 import Data.Bits (Bits (testBit))
 
-type Serializer = Writer [Word.Word8]
+type Serializer = Writer B.Builder
 
+runSerializer :: Serializer () -> B.ByteString
+runSerializer = B.toStrict . B.toLazyByteString . execWriter
 
 class Serializable a where
   serialize ::  a -> Serializer ()
   parse :: Parser a
 
-instance Serializable Word.Word8 where
-  serialize :: Word.Word8 -> Serializer ()
-  serialize word8 = tell [word8]
+instance Serializable W.Word8 where
+  serialize :: W.Word8 -> Serializer ()
+  serialize word8 = tell (B.word8 word8)
 
-  parse :: Parser Word.Word8
+  parse :: Parser W.Word8
   parse = next
 
-instance Serializable Word.Word32 where
-  serialize :: Word.Word32 -> Serializer ()
-  serialize word32 = do
-    let go 0 _ = return ()
-        go n x = do
-          go (n - 1) (x `div` 256)
-          serialize (fromInteger (x `mod` 256) :: Word.Word8)
+instance Serializable W.Word32 where
+  serialize :: W.Word32 -> Serializer ()
+  serialize word32 = tell (B.word32BE word32)
 
-    go (4 :: Int) (toInteger word32)
-
-  parse :: Parser Word.Word32
+  parse :: Parser W.Word32
   parse = do
     let decode = fromInteger . foldl (\acc byte -> acc * 256 + toInteger byte) 0
     decode <$> replicateM 4 next
@@ -50,7 +48,7 @@ instance Serializable [Bool] where
   serialize flags = do
     let (subflags, flags') = splitAt 8 flags
 
-    serialize $ foldl (\acc bit -> acc * 2 + if bit then 1 else 0) (0 :: Word.Word8) subflags
+    serialize $ foldl (\acc bit -> acc * 2 + if bit then 1 else 0) (0 :: W.Word8) subflags
     unless (null flags') $ do
       serialize flags'
 

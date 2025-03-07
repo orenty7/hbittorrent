@@ -13,7 +13,7 @@ import Parser.Core (Parser, eof, next, rest)
 
 import Control.Monad.Writer (MonadWriter (tell))
 
-import Data.Word (Word32)
+import Data.Word (Word8, Word32)
 import Data.ByteString (ByteString, unpack)
 
 data PeerMessage
@@ -22,65 +22,43 @@ data PeerMessage
   | UnChoke
   | Interested
   | NotInterested
-  | Have
-      -- | index of piece
-      Word32
-  | BitField
-      -- | Flags with pieces peer has
-      [Bool]
-  | Request
-      -- | piece index
-      Word32
-      -- | begin -- byte offset
-      Word32
-      -- | length
-      Word32
-  | Piece
-      -- | piece index
-      Word32
-      -- | begin -- byte offset
-      Word32
-      -- | part of the piece
-      ByteString
-  | Cancel
-      -- | piece index
-      Word32
-      -- | begin -- byte offset
-      Word32
-      -- | length
-      Word32
-  deriving (Eq, Show)
+  | Have {index :: Word32}
+  | BitField {flags :: [Bool]}
+  | Request {index :: Word32, begin :: Word32, length :: Word32}
+  | Piece {index :: Word32, begin :: Word32, piece :: ByteString}
+  | Cancel {index :: Word32, begin :: Word32, length :: Word32}
+  deriving (Show, Eq)
 
 instance Serializable PeerMessage where
   serialize :: PeerMessage -> Serializer ()
   serialize KeepAlive = do
     return ()
   serialize Choke = do
-    tell [0]
+    serialize (0 :: Word8)
   serialize UnChoke = do
-    tell [1]
+    serialize (1 :: Word8)
   serialize Interested = do
-    tell [2]
+    serialize (2 :: Word8)
   serialize NotInterested = do
-    tell [3]
+    serialize (3 :: Word8)
   serialize (Have index) = do
-    tell [4]
+    serialize (4 :: Word8)
     serialize index
   serialize (BitField flags) = do
-    tell [5]
+    serialize (5 :: Word8)
     serialize flags
   serialize (Request index offset length) = do
-    tell [6]
+    serialize (6 :: Word8)
     serialize index
     serialize offset
     serialize length
   serialize (Piece index offset subpiece) = do
-    tell [7]
+    serialize (7 :: Word8)
     serialize index
     serialize offset
-    tell $ unpack subpiece
+    mapM_ serialize (unpack subpiece)
   serialize (Cancel index offset length) = do
-    tell [8]
+    serialize (8 :: Word8)
     serialize index
     serialize offset
     serialize length

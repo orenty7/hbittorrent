@@ -28,7 +28,7 @@ module Loader (
 ) where
 
 import Peer (Handshake, PeerState(..), sendHandshake, receiveHandshake, runPeer)
-import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
+import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), runSerializer, headerSize)
 import Parser.Core(runParser)
 import Torrent (Torrent, fileLength, name, pieceLength, pieces)
 import Utils (convert)
@@ -187,8 +187,8 @@ tryToBuildPiece connection index = do
       return Nothing
 
 buildMessage :: PeerMessage -> B.ByteString
-buildMessage peerMessage = (B.pack $ execWriter $ serialize header) <> payload where 
-  payload = B.pack $ execWriter (serialize peerMessage)
+buildMessage peerMessage = (runSerializer $ serialize header) <> payload where 
+  payload = runSerializer $ serialize peerMessage
   header = MessageHeader $ fromIntegral $ B.length payload
 
 react :: IORef Connection -> IO ()
