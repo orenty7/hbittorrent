@@ -11,6 +11,7 @@ import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
 import qualified Data.Map as M
 import qualified Data.Set as S
+import qualified Network.Socket as NS
 
 import Control.Lens
 import Data.IORef
@@ -22,6 +23,7 @@ import Control.Monad.Writer
 type PeerId = Int
 data Peer = Peer 
   { _id :: PeerId
+  , _addr :: NS.SockAddr
   , _rating :: Int
   , _choke :: Bool
   , _interested :: Bool
@@ -34,7 +36,8 @@ makeLenses ''Peer
 data Loader = Loader 
   { _storage :: Storage 
   , _torrent :: Torrent
-  , _peers :: M.Map PeerId Peer 
+  , _peers :: M.Map PeerId Peer
+  , _knownPeers :: S.Set NS.SockAddr
   } deriving Show
 makeLenses ''Loader
 
@@ -42,18 +45,32 @@ data Incoming
   = InMessage PeerId PeerMessage
   | PeerDied PeerId
   | Heartbeat
+  | Connected PeerId
+  | DhtPeers [NS.SockAddr]
 
 data Outgoing 
   = OutMessage PeerId PeerMessage
   | PieceLoaded Int B.ByteString
-
+  | Connect NS.SockAddr
+  | AskDhtPeers
 
 type L = StateT Loader (Writer [Outgoing])
 
 loader :: Incoming -> L ()
 loader inMsg = 
   case inMsg of
-    Heartbeat -> return () 
+    Heartbeat -> do
+      kp <- use knownPeers
+      when (length kp < 10) $ do
+        tell [AskDhtPeers]
+      
+      p <- use peers      
+      when (M.size p < 10) $ do
+        let candidates = S.toList $ S.difference kp (S.fromList $ map (view addr) $ M.elems p)
+        case candidates of
+          (x:_) -> tell [Connect x]
+          _ -> return () 
+
     PeerDied pid -> 
       peers %= (M.delete pid)
 
@@ -124,13 +141,18 @@ run l state = (loader, events, a) where
 startLoader :: Torrent -> STM.TChan Incoming -> STM.TChan Outgoing ->  IO ()
 startLoader torrent incoming outgoing = do
   let storage = mkStorage torrent
-  stateRef <- newIORef (Loader storage torrent mempty) 
+  stateRef <- newIORef (Loader {
+    _storage = storage,
+    _torrent = torrent,
+    _peers = mempty,
+    _knownPeers =  mempty
+  })
 
   forever $ do
     inMsg <- STM.atomically $ STM.readTChan incoming
     state <- readIORef stateRef
     
-    let (state', events, _) = run (loader inMsg) state
+    let (state', events, ()) = run (loader inMsg) state
 
     writeIORef stateRef state' 
     STM.atomically $ do

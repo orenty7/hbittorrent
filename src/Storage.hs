@@ -56,8 +56,17 @@ store subpiece storage =
     piecesMap = storage^.mapping
     subpiecesMap = fromMaybe mempty (M.lookup (subpiece^.pieceIdx) piecesMap)
     subpiecesMap' = M.insert (subpiece^.subpieceIdx) (subpiece^.payload) subpiecesMap 
-    nSubpieces = (fromInteger $ storage^.torrent.pieceLength) `div` subpieceLength 
     
+    nSubpieces = 
+      let 
+        isLast = length (storage^.torrent.pieces) == (subpiece^.pieceIdx) 
+        thisPieceLength = 
+          if isLast 
+          then (storage^.torrent.fileLength) `mod` (storage^.torrent.pieceLength)
+          else (storage^.torrent.pieceLength)
+      in
+        ceiling (fromIntegral thisPieceLength / fromIntegral subpieceLength)
+
     (outcome, piecesMap') = 
       case M.size subpiecesMap' == nSubpieces of
         False -> (Stored, M.insert (subpiece^.pieceIdx) subpiecesMap' piecesMap)
