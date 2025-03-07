@@ -222,30 +222,30 @@ runPeer action config = runReaderT action config
 -- program :: Peer ()
 -- program = do
 --   env <- ask
---   incoming <- liftIO $ STM.atomically STM.newTChan
+--   incoming <- liftIO $ STM.atomically STM.newTTChan
 
 --   let receiver = forever $ do
 --         msg <- receiveMessage
 --         liftIO $ STM.atomically $ do
---           STM.writeTChan incoming msg
+--           STM.writeTTChan incoming msg
 
 --   liftIO $ forkIO $ runPeer receiver env
 
 --   return ()
 
-communicate :: S.Socket -> IO (Chan PeerMessage, Chan PeerMessage) 
+communicate :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan PeerMessage) 
 communicate socket = do
-  peerMessages <- newChan
-  masterMessages <- newChan
+  peerMessages <- STM.newTChanIO
+  masterMessages <- STM.newTChanIO
 
   let runPeer action = runReaderT action (PeerState socket)
 
   forkIO $ runPeer $ forever $ do
     msg <- receiveMessage
-    liftIO $ writeChan peerMessages msg
+    liftIO $ STM.atomically $ STM.writeTChan peerMessages msg
  
   forkIO $ runPeer $ forever $ do
-    msg <- liftIO $ readChan masterMessages
+    msg <- liftIO $ STM.atomically $ STM.readTChan masterMessages
     sendMessage msg
 
   return $ (peerMessages, masterMessages)
