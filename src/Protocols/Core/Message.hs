@@ -4,14 +4,14 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoFieldSelectors #-}
+--
+{-# OPTIONS_GHC -Wno-partial-fields #-}
 
 module Protocols.Core.Message (PeerMessage (..)) where
 
 import Protocols.Serializable (Serializable (..), Serializer)
 
 import Parser.Core (Parser, eof, next, rest)
-
-import Control.Monad.Writer (MonadWriter (tell))
 
 import Data.Word (Word8, Word32)
 import Data.ByteString (ByteString, unpack)

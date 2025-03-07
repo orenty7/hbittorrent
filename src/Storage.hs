@@ -11,7 +11,8 @@ module Storage (
   
   Subpiece (..),
   pieceIdx, 
-  subpieceIdx
+  subpieceIdx,
+  subpieceLength
   ) where
 
 import Torrent
@@ -21,7 +22,7 @@ import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.Map as M
 
-import Control.Lens (set, makeLenses, (^.), view, ix)
+import Control.Lens (set, makeLenses, (^.))
 import Data.Maybe (fromMaybe)
 
 data Storage = Storage 
@@ -50,15 +51,29 @@ mkStorage :: Torrent -> Storage
 mkStorage torrent = Storage mempty torrent
 
 store :: Subpiece -> Storage -> (Outcome, Storage)
-store (Subpiece {..}) storage = 
+store subpiece storage = 
   let 
     piecesMap = storage^.mapping
-    subpiecesMap = fromMaybe mempty (M.lookup _pieceIdx piecesMap)
-    subpiecesMap' = M.insert _subpieceIdx _payload subpiecesMap 
-    piecesMap' = M.insert _pieceIdx subpiecesMap' piecesMap
+    subpiecesMap = fromMaybe mempty (M.lookup (subpiece^.pieceIdx) piecesMap)
+    subpiecesMap' = M.insert (subpiece^.subpieceIdx) (subpiece^.payload) subpiecesMap 
+    nSubpieces = (fromInteger $ storage^.torrent.pieceLength) `div` subpieceLength 
+    
+    (outcome, piecesMap') = 
+      case M.size subpiecesMap' == nSubpieces of
+        False -> (Stored, M.insert (subpiece^.pieceIdx) subpiecesMap' piecesMap)
+        True -> 
+          let 
+            bytes = mconcat (M.elems subpiecesMap')
+            hash = (storage^.torrent.pieces) A.! (subpiece^.pieceIdx)
+          in
+            case check bytes hash of
+              True -> (Finished bytes, M.delete (subpiece^.pieceIdx) piecesMap)
+              False -> (Failed , M.delete (subpiece^.pieceIdx) piecesMap)
+
     storage' = set mapping piecesMap' storage
+    
   in
-    (Stored, storage)
+    (outcome, storage')
 
   -- subpieceMap = M.findWithDefault mempty index pieceMap
 

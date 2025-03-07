@@ -41,7 +41,6 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 import Data.Maybe (fromMaybe)
-import Data.Word (Word32, Word8)
 
 import Prelude as P
 

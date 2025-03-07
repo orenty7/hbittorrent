@@ -47,7 +47,6 @@ import qualified Data.Set as S
 import Control.Exception (onException)
 import Control.Lens (makeLenses, over, set, view, (&), (^.))
 import Control.Monad (forM_, unless, void, when)
-import Control.Monad.Writer (execWriter)
 import Control.Monad.Except
 
 import Data.IORef (IORef, readIORef, writeIORef)
