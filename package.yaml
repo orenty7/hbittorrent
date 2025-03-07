@@ -2,9 +2,9 @@ name: hbittorrent
 version: 0.1.0.0
 github: "githubuser/hbittorrent"
 license: BSD-3-Clause
-author: "Author name here"
-maintainer: "example@example.com"
-copyright: "2024 Author name here"
+author: "Prokhor Shlyakhtun"
+maintainer: "shlyakhtun.prohor@gmail.com"
+copyright: "2024 Prokhor Shlyakhtun"
 
 extra-source-files:
   - README.md
@@ -21,7 +21,7 @@ description: Please see the README on GitHub at <https://github.com/githubuser/h
 
 dependencies:
   - array
-  - base >= 4.7 && < 5
+  - base
   - bytestring
   - containers
   - cryptohash-sha1
@@ -44,7 +44,7 @@ ghc-options:
   - -Wall
   - -Wno-name-shadowing
   - -Wno-unused-do-bind
-  - -Werror
+  # - -Werror
   - -Wcompat
   - -Widentities
   - -Wincomplete-record-updates
