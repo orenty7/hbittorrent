@@ -13,6 +13,7 @@ module Tracker (
 
 import Bencode hiding (encode)
 import Torrent (Torrent, fileLength, infoHash)
+import Hash (unHash)
 import Utils (orFail, thenFail)
 
 import qualified Data.ByteString as B
@@ -43,7 +44,7 @@ buildQuery :: Torrent -> Port -> B.ByteString -> Query
 buildQuery torrent port peerId =
   P.map
     (Just <$>)
-    [ ("info_hash", torrent ^. infoHash)
+    [ ("info_hash", unHash (torrent ^. infoHash))
     , ("peer_id", peerId)
     , ("port", fromString $ show port)
     , ("uploaded", fromString "0")

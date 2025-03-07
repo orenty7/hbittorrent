@@ -12,13 +12,13 @@ module Torrent (
   urlList,
   infoHash,
   --
-  piece,
   mkTorrent,
 ) where
 
 import Bencode (Bencode (..), encode, _BDict, _BInteger, _BList, _BString)
+import qualified Hash as H
 
-import qualified Crypto.Hash.SHA1 as SHA1
+import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.Text as T
 
@@ -33,10 +33,10 @@ data Torrent = Torrent
   { _announce :: Maybe (Either URI [[URI]])
   , _name :: String
   , _pieceLength :: Integer
-  , _pieces :: B.ByteString
+  , _pieces :: A.Array Int H.Hash
   , _fileLength :: Integer
   , _urlList :: Maybe [URI]
-  , _infoHash :: B.ByteString
+  , _infoHash :: H.Hash
   }
   deriving (Eq, Show)
 
@@ -47,12 +47,12 @@ maybeDecodeUtf8 bstr = case decodeUtf8' bstr of
   Right text -> Just text
   _ -> Nothing
 
-piece :: Int -> Lens' Torrent B.ByteString
-piece index =
-  let offset = index * 20
-   in lens
-        ((B.take 20 . B.drop offset) . (view pieces))
-        (\torrent newhash -> (set pieces (B.take offset (torrent ^. pieces) <> newhash <> B.drop (offset + 20) (torrent ^. pieces)) torrent))
+
+splitPieces :: B.ByteString -> [H.Hash]
+splitPieces bstr 
+  | B.null bstr = []
+  | B.length bstr >= 20 = (H.mkHash $ B.take 20 bstr):splitPieces (B.drop 20 bstr)
+  | otherwise = error "Incorrect hash length"
 
 mkTorrent :: Bencode -> Maybe Torrent
 mkTorrent bencode = do
@@ -64,12 +64,12 @@ mkTorrent bencode = do
   info <- bencode ^? _BDict . ix "info" . _BDict
   name <- info ^? ix "name" . _BString >>= maybeDecodeUtf8
   pieceLength <- info ^? ix "piece length" . _BInteger
-  pieces <- info ^? ix "pieces" . _BString
+  pieces <- splitPieces <$> info ^? ix "pieces" . _BString
   fileLength <- info ^? ix "length" . _BInteger
 
   let urlList = bencode ^? _BDict . ix "url-list" . _BList
 
-  let hash = SHA1.hash $ encode (BDict info)
+  let hash = H.hash $ encode (BDict info)
 
   let makeUri bstr = do
         text <- maybeDecodeUtf8 bstr
@@ -87,7 +87,7 @@ mkTorrent bencode = do
       (if P.null announceList then Left <$> announce else Just (Right announceList))
       (T.unpack name)
       pieceLength
-      pieces
+      (A.listArray (0, length pieces - 1) pieces) 
       fileLength
       parsedUrlList
       hash

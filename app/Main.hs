@@ -15,9 +15,10 @@ import Utils (convert, timeout, withTcp)
 
 import qualified Loader
 import qualified Tracker
+import qualified Hash as H
 
 import qualified Control.Concurrent.STM as STM
-import qualified Crypto.Hash.SHA1 as SHA1
+import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.IORef as IORef
 import qualified Data.Set as S
@@ -68,19 +69,18 @@ main = do
 
   let putStrLnPar str = putStrPar (str <> "\n")
 
-  let nPieces = (`div` 20) $ B.length $ view Torrent.pieces torrent
+  let nPieces = length $ view Torrent.pieces torrent
 
   flags <- IO.withFile (view name torrent) IO.ReadWriteMode $ \handle -> do
     counterRef <- IORef.newIORef (0 :: Integer)
 
     flags <- forM [0 .. nPieces - 1] $ \index -> do
-      let hash = torrent ^. Torrent.piece index
+      let hash = (torrent ^. Torrent.pieces) A.! index
       let offset = convert index * view pieceLength torrent
       IO.hSeek handle IO.AbsoluteSeek offset
       piece <- B.hGetSome handle (convert $ view pieceLength torrent)
 
-      let flag = SHA1.hash piece == hash
-
+      let flag = H.check piece hash
       when flag $ do
         IORef.modifyIORef counterRef (+ 1)
 
@@ -110,7 +110,7 @@ main = do
 
         getDhtPeers = do
           putStrLnPar "Connecting to the DHT..."
-          Dht.find (view Torrent.infoHash torrent)
+          Dht.find $ H.unHash $ (view Torrent.infoHash torrent)
 
     let orEmpty :: Either SomeException [Socket.SockAddr] -> [Socket.SockAddr]
         orEmpty = fromRight []
@@ -154,7 +154,7 @@ main = do
             SocketBs.send socket $
               Loader.buildMessage $
                 CoreMessage.BitField $
-                  P.replicate ((`div` 20) $ B.length $ view Torrent.pieces torrent) False
+                  map (const False) (A.elems $ view Torrent.pieces torrent)
 
           void $
             SocketBs.send socket $

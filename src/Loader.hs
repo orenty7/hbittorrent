@@ -30,21 +30,22 @@ module Loader (
 import Peer (Handshake, PeerState(..), sendHandshake, receiveHandshake, runPeer)
 import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
 import Parser.Core(runParser)
-import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
+import Torrent (Torrent, fileLength, name, pieceLength, pieces)
 import Utils (convert)
+import qualified Hash as H
 
 import qualified Control.Concurrent.STM as STM
-import qualified Crypto.Hash.SHA1 as SHA1
 import qualified Network.Simple.TCP as TCP
 import qualified System.IO as IO
 
+import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.Map as M
 import qualified Data.Maybe
 import qualified Data.Set as S
 
 import Control.Exception (onException)
-import Control.Lens (makeLenses, over, set, view, (&))
+import Control.Lens (makeLenses, over, set, view, (&), (^.))
 import Control.Monad (forM_, unless, void, when)
 import Control.Monad.Writer (execWriter)
 import Control.Monad.Except
@@ -98,6 +99,7 @@ log connection message = do
   STM.atomically $ STM.putTMVar l ()
 
 recv :: TCP.Socket -> Int -> ExceptT () IO B.ByteString
+recv _ 0 = return B.empty
 recv socket n = do
   maybeChunk <- TCP.recv socket n
 
@@ -131,14 +133,9 @@ requeuePieces connection = do
 
 calcSubpiecesInPiece :: (Integral a) => Connection -> PieceIndex -> a
 calcSubpiecesInPiece connection index =
-  let isLast =
-        index
-          == ( connection
-                & view (torrent . Torrent.pieces)
-                & B.length
-                & (\x -> x `div` 20 - 1)
-                & convert
-             )
+  let isLast = 
+        convert index == length (view (torrent . Torrent.pieces) connection)
+
       currentPieceLength =
         if isLast
           then view (torrent . fileLength) connection `mod` view (torrent . pieceLength) connection
@@ -170,8 +167,8 @@ tryToBuildPiece connection index = do
   if P.length subpieces == calcSubpiecesInPiece connection index
     then
       let piece = mconcat subpieces
-          hash = view (torrent . Torrent.piece (convert index)) connection
-       in if SHA1.hash piece /= hash
+          hash = (connection^.torrent.Torrent.pieces) A.! (convert index) 
+       in if not $ H.check piece hash
             then do
               STM.writeTVar
                 (view globalState connection)
@@ -248,10 +245,7 @@ react connectionRef = do
                 IO.hSeek handle IO.AbsoluteSeek offset
                 B.hPut handle piece
               let total =
-                    connection
-                      & view (torrent . Torrent.pieces)
-                      & B.length
-                      & (`div` 20)
+                    length (view (torrent . Torrent.pieces) connection)
               Loader.log connection $ "\27[2\27[1G" <> "Loading (" <> show finished <> "/" <> show total <> ")"
 
       --

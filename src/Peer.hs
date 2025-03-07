@@ -17,11 +17,13 @@ module Peer (
   receiveHandshake, 
   sendMessage, 
   receiveMessage, 
-  runPeer
+  runPeer,
+  communicate
 ) where
 
 import Parser.Core (Parser, expectByte, expectChar, nextN, runParser)
 import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
+import qualified Hash as H 
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
@@ -42,7 +44,7 @@ import Prelude as P
 
 data Handshake = Handshake
   { _extensionFlags :: [Bool]
-  , _infoHash :: B.ByteString
+  , _infoHash :: H.Hash
   , _peerId :: B.ByteString
   }
   deriving (Eq, Show)
@@ -132,7 +134,7 @@ buildHandshake :: Handshake -> B.ByteString
 buildHandshake handshake = execWriter $ do
   tell handshakeBytes
   tell $ encode $ view extensionFlags handshake
-  tell $ handshake ^. Peer.infoHash
+  tell $ H.unHash $ handshake ^. Peer.infoHash
   tell $ handshake ^. Peer.peerId
 
 decodeHandshake :: Parser Handshake
@@ -142,7 +144,7 @@ decodeHandshake = do
     expectChar char
 
   extensionFlags <- bitUnpack <$> nextN 8
-  infoHash <- nextN 20
+  infoHash <- H.mkHash <$> nextN 20
   peerId <- nextN 20
 
   return $ Handshake extensionFlags infoHash peerId
