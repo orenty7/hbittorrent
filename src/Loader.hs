@@ -27,7 +27,7 @@ module Loader (
   buildMessage,
 ) where
 
-import Peer (Handshake, buildHandshake, decodeHandshake, handshakeSize)
+import Peer (Handshake, PeerState(..), sendHandshake, receiveHandshake, runPeer)
 import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
 import Parser.Core(runParser)
 import Torrent (Torrent, fileLength, name, piece, pieceLength, pieces)
@@ -112,11 +112,10 @@ recv socket n = do
 
 
 performHandshake :: TCP.Socket -> Handshake -> IO Handshake
-performHandshake socket handshake = do
-  TCP.send socket $ buildHandshake handshake
-
-  Right rawHandshake <- runExceptT $ recv socket handshakeSize
-  runParser decodeHandshake rawHandshake
+performHandshake socket handshake = runPeer action (PeerState socket) where 
+  action = do
+    sendHandshake handshake
+    receiveHandshake
 
 init :: TCP.Socket -> Torrent -> STM.TChan Event -> STM.TVar LoaderState -> Connection
 init socket torrent events globalState =
@@ -214,7 +213,7 @@ react connectionRef = do
         return ()
       Choke ->
         writeIORef connectionRef (set chocked True connection)
-      Unchoke ->
+      UnChoke ->
         writeIORef connectionRef (set chocked False connection)
       Interested ->
         writeIORef connectionRef (set interested True connection)

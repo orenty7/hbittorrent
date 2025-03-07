@@ -96,7 +96,7 @@ main = do
 
   let (finished, toLoad) = partition fst (P.zip flags [0 ..])
   putStrLnPar ""
-
+  
   peers <- do
     let getAnnouncePeers = do
           putStrLnPar "Connecting to the Tracker..."
@@ -115,7 +115,7 @@ main = do
     let orEmpty :: Either SomeException [Socket.SockAddr] -> [Socket.SockAddr]
         orEmpty = fromRight []
 
-    announcePeers <- try (timeout 30_000_000 getAnnouncePeers) <&> orEmpty
+    announcePeers <- try (timeout 120_000_000 getAnnouncePeers) <&> orEmpty
     dhtPeers <- try (timeout 120_000_000 getDhtPeers) <&> orEmpty
 
     return $ announcePeers <> dhtPeers
@@ -158,7 +158,7 @@ main = do
 
           void $
             SocketBs.send socket $
-              Loader.buildMessage CoreMessage.Unchoke
+              Loader.buildMessage CoreMessage.UnChoke
           void $
             SocketBs.send socket $
               Loader.buildMessage CoreMessage.Interested

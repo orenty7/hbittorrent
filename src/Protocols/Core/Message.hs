@@ -19,7 +19,7 @@ import Data.ByteString (ByteString, unpack)
 data PeerMessage
   = KeepAlive
   | Choke
-  | Unchoke
+  | UnChoke
   | Interested
   | NotInterested
   | Have
@@ -57,7 +57,7 @@ instance Serializable PeerMessage where
     return ()
   serialize Choke = do
     tell [0]
-  serialize Unchoke = do
+  serialize UnChoke = do
     tell [1]
   serialize Interested = do
     tell [2]
@@ -95,7 +95,7 @@ instance Serializable PeerMessage where
 
         case messageType of
           0 -> return Choke
-          1 -> return Unchoke
+          1 -> return UnChoke
           2 -> return Interested
           3 -> return NotInterested
           4 -> Have <$> parse
