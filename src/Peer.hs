@@ -117,6 +117,7 @@ sendMessage message = do
 runPeer :: Peer a -> PeerState -> IO a
 runPeer action config = runReaderT action config
 
+
 -- program :: Peer ()
 -- program = do
 --   env <- ask
@@ -125,7 +126,7 @@ runPeer action config = runReaderT action config
 --   let receiver = forever $ do
 --         msg <- receiveMessage
 --         liftIO $ STM.atomically $ do
---           STM.writeTTChan incoming msg
+--           STM.writeTChan incoming msg
 
 --   liftIO $ forkIO $ runPeer receiver env
 

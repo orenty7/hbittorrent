@@ -11,9 +11,11 @@ import Bencode (parse)
 import Dht (find)
 import Peer (Handshake (..))
 import Torrent
-import Utils (convert, timeout, withTcp)
+import Utils (convert, timeout, withTcp, createTcp)
 
+import qualified FileSystem as FS
 import qualified Loader
+import qualified LoaderV2 as V2
 import qualified Tracker
 import qualified Hash as H
 
@@ -22,13 +24,15 @@ import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.IORef as IORef
 import qualified Data.Set as S
-import qualified Network.Socket as Socket
-import qualified Network.Socket.ByteString as SocketBs
+import qualified Data.Map as M
+
+import qualified Network.Socket as NS
+import qualified Network.Socket.ByteString as NS
 import qualified Protocols.Core.Message as CoreMessage
 import qualified System.IO as IO
 
 import Control.Applicative (asum)
-import Control.Concurrent (forkFinally, newEmptyMVar, newMVar, putMVar, takeMVar)
+import Control.Concurrent (threadDelay, forkFinally, forkIO, newEmptyMVar, newMVar, putMVar, takeMVar)
 import Control.Exception (SomeException, try)
 import Control.Lens
 import Control.Monad (forM, forM_, forever, join, replicateM, void, when)
@@ -59,15 +63,82 @@ main = do
       exitFailure
 
   (Just torrent) <- readTorrent filename
+
   lock <- newMVar ()
+  let 
+    putStrPar str = do
+      takeMVar lock
+      putStr str
+      IO.hFlush IO.stdout
+      putMVar lock ()
+    
+    putStrLnPar str = putStrPar (str <> "\n")
+  
+  let 
+    getAnnouncePeers = do
+      putStrLnPar "Connecting to the Tracker..."
+      announce <- case view announce torrent of
+        Nothing -> fail "No announce"
+        Just (Left url) -> Tracker.getPeers torrent url 6881
+        Just (Right urlss) -> do
+          let urls = join urlss
+          asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
+      return (view Tracker.peers announce)
 
-  let putStrPar str = do
-        takeMVar lock
-        putStr str
-        IO.hFlush IO.stdout
-        putMVar lock ()
+    getDhtPeers = do
+      putStrLnPar "Connecting to the DHT..."
+      Dht.find $ H.unHash $ (view Torrent.infoHash torrent)
 
-  let putStrLnPar str = putStrPar (str <> "\n")
+
+  filesystem <- FS.mkFileSystem torrent
+  
+  loaderIn <- STM.newTChanIO
+  loaderOut <- STM.newTChanIO
+  
+  forkIO $ forever $ do
+    STM.atomically $ STM.writeTChan loaderIn V2.Heartbeat
+    threadDelay 5_000_000
+
+  forkIO $ V2.startLoader torrent loaderIn loaderOut
+
+  counter <- IORef.newIORef 0
+  connections <- STM.newTVarIO mempty
+
+  forever $ do
+    msg <- STM.atomically $ STM.readTChan loaderOut
+    putStrLn $ take 200 $ show msg
+    case msg of
+      V2.AskDhtPeers -> do
+        dhtPeers <- getDhtPeers 
+        STM.atomically $ STM.writeTChan loaderIn $ V2.DhtPeers dhtPeers
+        print dhtPeers
+      
+      V2.Connect addr -> do
+        pid <- IORef.readIORef counter 
+        IORef.writeIORef counter (pid + 1)
+
+        void $ forkIO $ do
+          socket <- createTcp
+          NS.connect socket addr
+          
+          let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
+
+          Loader.performHandshake socket handshake
+
+          peerIn <- STM.newTChanIO
+          peerOut <- STM.newTChanIO
+
+          STM.atomically $ do
+            STM.modifyTVar connections (M.insert pid (pid, peerIn, peerOut))
+
+          STM.atomically $ do
+            STM.writeTChan loaderIn (V2.Connected pid addr)
+
+      V2.PieceLoaded index piece -> do
+        FS.store index piece filesystem
+
+      V2.OutMessage pid msg -> do
+        return () 
 
   let nPieces = length $ view Torrent.pieces torrent
 
@@ -98,21 +169,7 @@ main = do
   putStrLnPar ""
   
   peers <- do
-    let getAnnouncePeers = do
-          putStrLnPar "Connecting to the Tracker..."
-          announce <- case view announce torrent of
-            Nothing -> fail "No announce"
-            Just (Left url) -> Tracker.getPeers torrent url 6881
-            Just (Right urlss) -> do
-              let urls = join urlss
-              asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
-          return (view Tracker.peers announce)
-
-        getDhtPeers = do
-          putStrLnPar "Connecting to the DHT..."
-          Dht.find $ H.unHash $ (view Torrent.infoHash torrent)
-
-    let orEmpty :: Either SomeException [Socket.SockAddr] -> [Socket.SockAddr]
+    let orEmpty :: Either SomeException [NS.SockAddr] -> [NS.SockAddr]
         orEmpty = fromRight []
 
     announcePeers <- try (timeout 120_000_000 getAnnouncePeers) <&> orEmpty
@@ -138,12 +195,11 @@ main = do
   waiters <- replicateM (P.length peers - 1) newEmptyMVar
 
   putStrLnPar "Connecting to peers..."
-
   forM_ (P.zip waiters peers) $ \(waiter, peer) -> do
     let action = withTcp $ \socket -> do
-          Socket.connect socket peer
+          NS.connect socket peer
 
-          let handshake = Handshake (replicate 64 False) (Torrent._infoHash torrent) "asdfasdfasdfasdfasdf"
+          let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
 
           void $ Loader.performHandshake socket handshake
           
@@ -151,16 +207,16 @@ main = do
           connectionRef <- IORef.newIORef $ Loader.init socket torrent eventsChan globalState
 
           void $
-            SocketBs.send socket $
+            NS.send socket $
               Loader.buildMessage $
                 CoreMessage.BitField $
                   map (const False) (A.elems $ view Torrent.pieces torrent)
 
           void $
-            SocketBs.send socket $
+            NS.send socket $
               Loader.buildMessage CoreMessage.UnChoke
           void $
-            SocketBs.send socket $
+            NS.send socket $
               Loader.buildMessage CoreMessage.Interested
 
           forever $ Loader.react connectionRef

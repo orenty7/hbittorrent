@@ -3,7 +3,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 
 module Torrent (
-  Torrent (..),
+  Torrent,
   announce,
   name,
   pieceLength,

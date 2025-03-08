@@ -1,17 +1,23 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GHC2021 #-}
 
-module LoaderV2 (startLoader) where
+module LoaderV2 (
+  startLoader,
+  Incoming (..),
+  Outgoing (..)
+  ) where
 
 import Torrent
 import Protocols (PeerMessage (..))
 import Storage
 
 import qualified Control.Concurrent.STM as STM
+import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Network.Socket as NS
+
 
 import Control.Lens
 import Data.IORef
@@ -45,14 +51,16 @@ data Incoming
   = InMessage PeerId PeerMessage
   | PeerDied PeerId
   | Heartbeat
-  | Connected PeerId
+  | Connected PeerId NS.SockAddr 
   | DhtPeers [NS.SockAddr]
+  deriving Show
 
 data Outgoing 
   = OutMessage PeerId PeerMessage
   | PieceLoaded Int B.ByteString
   | Connect NS.SockAddr
   | AskDhtPeers
+  deriving Show
 
 type L = StateT Loader (Writer [Outgoing])
 
@@ -66,13 +74,33 @@ loader inMsg =
       
       p <- use peers      
       when (M.size p < 10) $ do
-        let candidates = S.toList $ S.difference kp (S.fromList $ map (view addr) $ M.elems p)
-        case candidates of
-          (x:_) -> tell [Connect x]
-          _ -> return () 
+        let 
+          candidates = S.toList $ S.difference kp (S.fromList $ map (view addr) $ M.elems p)
+          n = 10 - M.size p
+          selected = take n candidates
 
-    PeerDied pid -> 
+        tell $ map Connect selected
+        knownPeers %= (`S.difference` S.fromList selected) 
+
+    PeerDied pid -> do
       peers %= (M.delete pid)
+
+    DhtPeers peers -> do
+      knownPeers %= (<> S.fromList peers)
+    
+    Connected pid addr  -> do
+      peers %= (M.insert pid $ Peer {
+        _id = pid,
+        _addr = addr,
+        _rating = 0,
+        _choke = True,
+        _interested = False,
+        _pieces = mempty,
+        _queuedSubpieces = [] 
+      })
+      
+      p <- use (torrent.Torrent.pieces)
+      tell $ [OutMessage pid $ BitField $ map (const False) $ A.elems p]
 
     InMessage pid msg ->
       case msg of
