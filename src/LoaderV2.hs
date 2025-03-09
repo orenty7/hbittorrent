@@ -120,10 +120,8 @@ loader inMsg =
         knownPeers %= (`S.difference` S.fromList selected) 
 
     PeerDied pid -> do
-      peer <- use peers.(ix pid)
-
       peers %= (M.delete pid)
-      requestedPieces %= (`S.difference` $ peer^.queuedPieces)
+      -- peer <- use peers.(ix pid)
 
     DhtPeers peers -> do
       knownPeers %= (<> S.fromList peers)
