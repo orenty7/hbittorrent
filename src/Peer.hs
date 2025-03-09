@@ -16,6 +16,7 @@ module Peer (
 import Parser.Core (runParser)
 import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
 import Protocols.Handshake
+import Logger
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
@@ -128,7 +129,7 @@ startPeer socket = do
             msg <- STM.atomically $ STM.readTChan incoming 
             runPeer (sendMessage msg) peer)
           (\(res :: Either SomeException ()) -> do
-            print res 
+            printPar res 
             putMVar finished 1) 
 
       t2 <- 
@@ -137,7 +138,7 @@ startPeer socket = do
             msg <- runPeer receiveMessage peer 
             STM.atomically $ STM.writeTChan outgoing (Just msg))
           (\(res :: Either SomeException ()) -> do
-            print res 
+            printPar res 
             putMVar finished 2) 
 
       x <- takeMVar finished

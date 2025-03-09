@@ -10,26 +10,26 @@ module Main (main) where
 
 import Bencode (parse)
 import Dht (find)
+import Logger
 import Peer (Handshake (..), performHandshake, startPeer)
 import Torrent
 import Utils (createTcp)
 
 import qualified FileSystem as FS
+import qualified Hash as H
 import qualified LoaderV2 as V2
 import qualified Tracker
-import qualified Hash as H
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
 import qualified Data.IORef as IORef
 import qualified Data.Map as M
 import qualified Data.Set as S
-
 import qualified Network.Socket as NS
 import qualified System.IO as IO
 
 import Control.Applicative (asum)
-import Control.Concurrent (threadDelay, forkIO, newMVar, putMVar, takeMVar)
+import Control.Concurrent (threadDelay, forkIO)
 import Control.Exception (SomeException, try)
 import Control.Lens
 import Control.Monad (forever, join, void)
@@ -58,16 +58,6 @@ main = do
 
   (Just torrent) <- readTorrent filename
 
-  lock <- newMVar ()
-  let 
-    putStrPar str = do
-      takeMVar lock
-      putStr str
-      IO.hFlush IO.stdout
-      putMVar lock ()
-    
-    putStrLnPar str = putStrPar (str <> "\n")
-  
   let 
     getAnnouncePeers = do
       putStrLnPar "Connecting to the Tracker..."
@@ -119,14 +109,13 @@ main = do
         Nothing -> V2.PeerDied pid
     
     case msg of
-      Nothing -> putStrLn "peer died"
+      Nothing -> putStrLnPar "peer died"
       _ -> return ()
 
   finishedRef <- IORef.newIORef $ S.size loadedPieces
  
   forever $ do
     msg <- STM.atomically $ STM.readTChan loaderOut 
-    -- putStrLn $ take 100 $ show msg
 
     case msg of
       V2.AnnounceTracker -> do
@@ -147,13 +136,15 @@ main = do
           socket <- createTcp
 
           res <- try $ do
+            printPar (socket, addr)
             NS.connect socket addr
             let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
             performHandshake socket handshake
             startPeer socket
 
           case res of
-            Left (e :: SomeException) -> 
+            Left (e :: SomeException) -> do
+              printPar e
               STM.atomically $ do
                 STM.writeTChan loaderIn (V2.ConnectionFailed addr)
             
@@ -169,7 +160,15 @@ main = do
         IORef.modifyIORef finishedRef (+1)
 
         finished <- IORef.readIORef finishedRef
-        putStrLnPar $ "Loading (" <> show finished <> "/" <> show (length $ torrent^.pieces) <> ")"
+        putStrLnPar $ mconcat [
+            "Loaded #",
+            show index,
+            " \t(",
+            show finished, 
+            "/",
+            show (length $ torrent^.pieces),
+            ")"
+          ]
 
       V2.GetFs id index offset length -> do
         response <- FS.get index offset length filesystem

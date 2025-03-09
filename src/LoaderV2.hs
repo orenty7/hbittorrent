@@ -18,13 +18,13 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Network.Socket as NS
 
-import Data.IORef
-import Data.List (nub)
-import Data.Word
 import Control.Lens
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Writer
+import Data.IORef
+import Data.List (nub)
+import Data.Word
 import System.Random
 
 type PeerId = Int

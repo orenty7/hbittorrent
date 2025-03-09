@@ -1,6 +1,7 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE GHC2021 #-}
 --
 {-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
@@ -15,16 +16,15 @@ import Bencode (
   _BString,
  )
 import Utils (orFail, timeout, withUdp)
+import Logger
 
 import qualified Data.ByteString as B
 
 import Control.Applicative (asum)
-import Control.Concurrent
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, try, catch, throw)
 import Control.Lens
 import Control.Monad
 import Data.Map
-import GHC.IO (unsafePerformIO)
 import qualified Network.Socket as Socket
 import Network.Socket.ByteString (recv, send)
 
@@ -86,16 +86,6 @@ parseNode bstr =
 root :: Socket.SockAddr
 root = Socket.SockAddrInet 25401 $ Socket.tupleToHostAddress (185, 157, 221, 247)
 
-lock :: MVar ()
-{-# NOINLINE lock #-}
-lock = unsafePerformIO $ newMVar ()
-
-putStrLnPar :: String -> IO ()
-putStrLnPar x = do
-  takeMVar lock
-  putStrLn x
-  putMVar lock ()
-
 find :: B.ByteString -> IO [Socket.SockAddr]
 find hash = find' [] root
  where
@@ -106,7 +96,9 @@ find hash = find' [] root
       fail "cycle"
 
     putStrLnPar $ show (P.length path) <> " " <> show current
-    Socket.connect socket current
+    (Socket.connect socket current)
+      `catch` (\(e :: SomeException) -> print e >> throw e)
+    
     void $ send socket $ getPeers "asdfasdfasdfasdfasdf" hash
 
     let eitherToMaybe :: Either SomeException B.ByteString -> Maybe B.ByteString
