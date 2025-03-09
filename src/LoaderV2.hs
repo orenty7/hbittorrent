@@ -20,6 +20,7 @@ import qualified Network.Socket as NS
 
 import Control.Lens
 import Data.IORef
+import Data.List (nub)
 import Data.Word
 import Control.Monad
 import Control.Monad.State
@@ -57,6 +58,7 @@ data Incoming
   | Connected PeerId NS.SockAddr 
   | DhtPeers [NS.SockAddr]
   | TrackerPeers [NS.SockAddr]
+  | FsResponse PeerId Word32 Word32 B.ByteString
   deriving Show
 
 data Outgoing 
@@ -65,15 +67,15 @@ data Outgoing
   | Connect NS.SockAddr
   | AskDhtPeers
   | AnnounceTracker
+  | GetFs PeerId Word32 Word32 Word32
   deriving Show
 
 type L = StateT Loader (Writer [Outgoing])
 
-buildPieceRequests :: Word32 -> L [PeerMessage]
-buildPieceRequests pieceIdx = do 
-  t <- use torrent 
+buildPieceRequests :: T.Torrent -> Word32 -> L [PeerMessage]
+buildPieceRequests torrent pieceIdx = do 
   let 
-    subpiecesCount = fromIntegral $ subpiecesInPiece t pieceIdx
+    subpiecesCount = fromIntegral $ subpiecesInPiece torrent pieceIdx
     
     buildRequest subpieceIdx = 
       Request pieceIdx (subpieceIdx * subpieceLength) subpieceLength  
@@ -83,19 +85,28 @@ buildPieceRequests pieceIdx = do
 
 tryToRequestPiece :: PeerId -> L ()
 tryToRequestPiece pid = do
+  t <- use torrent
   loaded <- use loadedPieces
   requested <- use requestedPieces
   
   peerPieces <- use $ peers.(ix pid).pieces
   requestedPeerPieces <- use $ peers.(ix pid).queuedPieces
-
-  let candidates = peerPieces `S.difference` (loaded `S.union` requested) 
+  
+  let 
+    endgame = length (t^.T.pieces) - S.size loaded < 10
+    
+    candidates = 
+      if endgame 
+        then peerPieces `S.difference` (loaded `S.union` requestedPeerPieces)
+        else peerPieces `S.difference` (loaded `S.union` requested) 
 
   when (S.size requestedPeerPieces < 20 && S.size candidates /= 0) $ do
     selectedIdx <- zoom rng $ state $ randomR (0, S.size candidates - 1)
     let pieceIdx = S.elemAt selectedIdx candidates  
-
-    requests <- buildPieceRequests pieceIdx
+    requests <- do 
+      t <- use torrent
+      buildPieceRequests t pieceIdx
+  
     tell $ map (OutMessage pid) requests
 
     requestedPieces %= (S.insert pieceIdx)
@@ -110,23 +121,30 @@ loader inMsg =
       when (length kp < 10) $ do
         tell [AskDhtPeers, AnnounceTracker]
 
-      when (M.size p < 10) $ do
-        let 
-          candidates = S.toList $ S.difference kp (S.fromList $ map (view addr) $ M.elems p)
+      when (M.size p < 20) $ do
+        let
+          candidates = S.difference kp (S.fromList $ map (view addr) $ M.elems p)
           n = 10 - M.size p
-          selected = take n candidates
+        
+        when (S.size candidates > 0) $ do
+          (indexes :: [Int]) <- zoom rng $ replicateM n $ state $ randomR (0, S.size candidates - 1)
+          
+          let 
+            selected = map (`S.elemAt` candidates) $ nub indexes
 
-        tell $ map Connect selected
-        knownPeers %= (`S.difference` S.fromList selected) 
+          tell $ map Connect selected
 
     PeerDied pid -> do
+      p <- use peers
       peers %= (M.delete pid)
-      -- peer <- use peers.(ix pid)
+      requestedPieces %= (`S.difference` (p^.(ix pid).queuedPieces))      
 
     DhtPeers peers -> do
       knownPeers %= (<> S.fromList peers)
     TrackerPeers peers -> do
       knownPeers %= (<> S.fromList peers)
+    FsResponse pid index offset bytes -> do
+      tell $ [OutMessage pid $ Piece index offset bytes]
     
     Connected pid addr  -> do
       peers %= (M.insert pid $ Peer {
@@ -168,7 +186,9 @@ loader inMsg =
         Have piece ->
           peers.(ix pid).LoaderV2.pieces %= (S.insert piece)
         Request index offset length -> do
-          return ()
+          when (length == subpieceLength) $ do
+            tell $ [GetFs pid index offset length]
+        
         Piece pieceIdx offset payload -> do
           let 
             offsetIsCorrect = offset `mod` subpieceLength == 0
@@ -190,6 +210,7 @@ loader inMsg =
               Finished piece -> do
                 tell [PieceLoaded (fromIntegral pieceIdx) piece]
                 
+                loadedPieces %= (S.insert pieceIdx)
                 requestedPieces %= (S.delete pieceIdx)
                 peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
                 

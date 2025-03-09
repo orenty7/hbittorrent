@@ -2,7 +2,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE GHC2021 #-}
 
-module FileSystem (FileSystem, mkFileSystem, store, check) where
+module FileSystem (FileSystem, mkFileSystem, get, store, check) where
 
 import Torrent
 import qualified Hash as H
@@ -58,3 +58,18 @@ check fs = do
     counter <- IORef.readIORef counterRef
     putStrLn $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
     return $ S.fromList $ map snd $ filter fst result
+
+get :: Word32 -> Word32 -> Word32 -> FileSystem -> IO (Maybe B.ByteString)
+get index offset length fs = do
+  IO.withFile (fs^.torrent.name) IO.ReadWriteMode $ \handle -> do
+    let 
+      hash = (fs^.torrent.pieces) A.! index
+      offset = index * (fromInteger $ fs^.torrent.pieceLength)
+    
+    IO.hSeek handle IO.AbsoluteSeek (fromIntegral offset)
+    piece <- B.hGetSome handle (fromInteger $ fs^.torrent.pieceLength)
+
+    return $ if H.check piece hash
+      then Just (B.take (fromIntegral length) $ B.drop (fromIntegral offset) piece)
+      else Nothing
+

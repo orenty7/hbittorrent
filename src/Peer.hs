@@ -1,11 +1,6 @@
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE GHC2021 #-}
+
 --
 {-# OPTIONS_GHC -Wno-partial-fields #-}
 
@@ -33,6 +28,7 @@ import qualified Network.Socket as S
 import qualified Network.Socket.ByteString as S
 
 import Control.Concurrent
+import Control.Exception (SomeException)
 import Control.Lens
 import Control.Monad (when, forever)
 import Control.Monad.Reader
@@ -114,20 +110,43 @@ runPeer :: Peer a -> PeerState -> IO a
 runPeer action config = runReaderT action config
 
 
-startPeer :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan PeerMessage)
+startPeer :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan (Maybe PeerMessage))
 startPeer socket = do
   let peer = PeerState socket
 
   incoming <- STM.newTChanIO
   outgoing <- STM.newTChanIO
 
-  forkIO $ forever $ do
-    msg <- STM.atomically $ STM.readTChan incoming 
-    runPeer (sendMessage msg) peer
+  forkFinally 
+    (do
+      (finished :: MVar Int) <- newEmptyMVar
 
-  forkIO $ forever $ do
-    msg <- runPeer receiveMessage peer 
-    STM.atomically $ STM.writeTChan outgoing msg
+      t1 <- 
+        forkFinally 
+          (forever $ do
+            msg <- STM.atomically $ STM.readTChan incoming 
+            runPeer (sendMessage msg) peer)
+          (\(res :: Either SomeException ()) -> do
+            print res 
+            putMVar finished 1) 
+
+      t2 <- 
+        forkFinally 
+          (forever $ do
+            msg <- runPeer receiveMessage peer 
+            STM.atomically $ STM.writeTChan outgoing (Just msg))
+          (\(res :: Either SomeException ()) -> do
+            print res 
+            putMVar finished 2) 
+
+      x <- takeMVar finished
+      case x of
+        1 -> killThread t2
+        2 -> killThread t1
+        _ -> error "Invalid tread finished in Peer")
+    (\_ -> do 
+      STM.atomically $ STM.writeTChan outgoing Nothing
+      S.close socket)
 
   return (incoming, outgoing)    
     

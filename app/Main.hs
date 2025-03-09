@@ -31,6 +31,7 @@ import qualified System.IO as IO
 
 import Control.Applicative (asum)
 import Control.Concurrent (threadDelay, forkIO, newMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, try)
 import Control.Lens
 import Control.Monad (forever, join, void)
 import System.Environment (getArgs)
@@ -76,7 +77,11 @@ main = do
         Just (Left url) -> Tracker.getPeers torrent url 6881
         Just (Right urlss) -> do
           let urls = join urlss
-          asum $ P.map (\url -> Tracker.getPeers torrent url 6881) urls
+          res <- asum $ P.map (\url -> try $ Tracker.getPeers torrent url 6881) urls
+          case (res :: Either SomeException Tracker.Announce) of 
+            Right peers -> return peers
+            Left _ -> fail "Can't request peers"
+
       return (view Tracker.peers announce)
 
     getDhtPeers = do
@@ -107,8 +112,16 @@ main = do
       asum $ flip map peers $ \(pid, (peerIn, peerOut)) -> do
         peerMsg <- STM.readTChan peerOut
         return (pid, peerMsg)
+    
 
-    STM.atomically $ STM.writeTChan loaderIn $ V2.InMessage pid msg
+    STM.atomically $ STM.writeTChan loaderIn $ 
+      case msg of
+        Just msg -> V2.InMessage pid msg
+        Nothing -> V2.PeerDied pid
+    
+    case msg of
+      Nothing -> putStrLn "peer died"
+      _ -> return ()
 
   finishedRef <- IORef.newIORef $ S.size loadedPieces
  
@@ -134,7 +147,7 @@ main = do
         void $ forkIO $ do
           socket <- createTcp
           NS.connect socket addr
-          
+
           let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
 
           Loader.performHandshake socket handshake
@@ -152,7 +165,13 @@ main = do
         IORef.modifyIORef finishedRef (+1)
 
         finished <- IORef.readIORef finishedRef
-        putStrLnPar $ "\27[2\27[1G" <> "Loading (" <> show finished <> "/" <> show (length $ torrent^.pieces) <> ")"
+        putStrLnPar $ "Loading (" <> show finished <> "/" <> show (length $ torrent^.pieces) <> ")"
+
+      V2.GetFs id index offset length -> do
+        response <- FS.get index offset length filesystem
+        case response of
+          Just bytes -> STM.atomically $ STM.writeTChan loaderIn $ V2.FsResponse id index offset bytes
+          Nothing -> return ()
 
       V2.OutMessage pid msg -> do
         connections <- STM.atomically $ STM.readTVar connectionsRef
