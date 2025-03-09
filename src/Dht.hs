@@ -136,7 +136,7 @@ find hash = find' [] root
                   (node, rest) = B.splitAt 26 packed
           -- printPar nodes
 
-          let newpath = current : path
-          let addresses = P.map (find' newpath . view address) nodes
+          let newPath = current : path
+          let addresses = P.map (find' newPath . view address) nodes
 
           asum $ addresses <> (if P.null path then [find' [] current] else [])

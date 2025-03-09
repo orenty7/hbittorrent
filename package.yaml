@@ -2,9 +2,9 @@ name: hbittorrent
 version: 0.1.0.0
 github: "githubuser/hbittorrent"
 license: BSD-3-Clause
-author: "Author name here"
-maintainer: "example@example.com"
-copyright: "2024 Author name here"
+author: "Prokhor Shlyakhtun"
+maintainer: "shlyakhtun.prohor@gmail.com"
+copyright: "2024 Prokhor Shlyakhtun"
 
 extra-source-files:
   - README.md
@@ -20,7 +20,8 @@ extra-source-files:
 description: Please see the README on GitHub at <https://github.com/githubuser/hbittorrent#readme>
 
 dependencies:
-  - base >= 4.7 && < 5
+  - array
+  - base
   - bytestring
   - containers
   - cryptohash-sha1
@@ -34,7 +35,6 @@ dependencies:
   - network-simple
   - network-uri
   - random
-  - random
   - stm
   - template-haskell
   - text
@@ -42,12 +42,13 @@ dependencies:
   - utf8-string
 ghc-options:
   - -Wall
-  - -Wno-name-shadowing
   - -Werror
   - -Wcompat
+  - -Wno-name-shadowing
+  - -Wno-unused-do-bind
+  - -Wno-unused-matches
+  - -Wno-unused-top-binds
   - -Widentities
-  - -Wincomplete-record-updates
-  - -Wincomplete-uni-patterns
   - -Wmissing-export-lists
   - -Wmissing-home-modules
   - -Wpartial-fields

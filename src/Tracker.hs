@@ -13,10 +13,13 @@ module Tracker (
 
 import Bencode hiding (encode)
 import Torrent (Torrent, fileLength, infoHash)
+import Hash (unHash)
 import Utils (orFail, thenFail)
 
+import qualified Data.ByteString as B
 import qualified Data.ByteString.UTF8 as BSU
 import qualified Network.Socket as Socket
+
 
 import Control.Lens
 import Control.Monad.IO.Class (MonadIO (..))
@@ -37,12 +40,12 @@ data Announce = Announce
 
 makeLenses ''Announce
 
-buildQuery :: Torrent -> Port -> Query
-buildQuery torrent port =
+buildQuery :: Torrent -> Port -> B.ByteString -> Query
+buildQuery torrent port peerId =
   P.map
     (Just <$>)
-    [ ("info_hash", torrent ^. infoHash)
-    , ("peer_id", "asdfasdfasdfasdfasdf")
+    [ ("info_hash", unHash (torrent ^. infoHash))
+    , ("peer_id", peerId)
     , ("port", fromString $ show port)
     , ("uploaded", fromString "0")
     , ("downloaded", fromString "0")
@@ -66,13 +69,13 @@ extractPeer bencode = do
   addrs <- liftIO $ Socket.getAddrInfo Nothing (Just $ BSU.toString host) (Just $ show port)
   return $ P.map (Socket.addrAddress) addrs
 
-createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Port -> m Request
-createRequestAnnounce torrent trackerUri port = do
+createRequestAnnounce :: (MonadFail m) => Torrent -> URI -> Port -> B.ByteString -> m Request
+createRequestAnnounce torrent trackerUri port peerId = do
   request <-
     (parseRequest $ renderStr $ trackerUri)
       `orFail` "Can't reparse or announce is not present request"
 
-  return $ addToRequestQueryString (buildQuery torrent port) request
+  return $ addToRequestQueryString (buildQuery torrent port peerId) request
 
 parseResponse :: (MonadIO m, MonadFail m) => Bencode -> m Announce
 parseResponse bencode = do
@@ -88,7 +91,7 @@ parseResponse bencode = do
 
 getPeers :: (MonadIO m, MonadFail m) => Torrent -> URI -> Port -> m Announce
 getPeers torrent trackerUri port = do
-  request <- createRequestAnnounce torrent trackerUri port
+  request <- createRequestAnnounce torrent trackerUri port "bsdfbsdfbsdfbsdfbsdf"
   response <- httpBS request
   bencode <- parse $ responseBody response
 
