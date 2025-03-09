@@ -18,10 +18,10 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Network.Socket as NS
 
-import Control.Lens
 import Data.IORef
 import Data.List (nub)
 import Data.Word
+import Control.Lens
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Writer
@@ -32,13 +32,12 @@ data Peer = Peer
   { _id :: PeerId
   , _addr :: NS.SockAddr
   , _rating :: Int
-  , _choke :: Bool
+  , _choked :: Bool
   , _interested :: Bool
   , _pieces :: S.Set Word32
   , _queuedPieces :: S.Set Word32
   } deriving Show
 makeLenses ''Peer
-
 
 data Loader = Loader 
   { _storage :: Storage 
@@ -56,6 +55,7 @@ data Incoming
   | PeerDied PeerId
   | Heartbeat
   | Connected PeerId NS.SockAddr 
+  | ConnectionFailed NS.SockAddr 
   | DhtPeers [NS.SockAddr]
   | TrackerPeers [NS.SockAddr]
   | FsResponse PeerId Word32 Word32 B.ByteString
@@ -83,9 +83,14 @@ buildPieceRequests torrent pieceIdx = do
   return $ map buildRequest [0..subpiecesCount - 1]
 
 
+assertM :: Monad m => Bool -> String -> m () 
+assertM cond msg = unless cond $ error msg
+
 tryToRequestPiece :: PeerId -> L ()
 tryToRequestPiece pid = do
   t <- use torrent
+  s <- use storage
+
   loaded <- use loadedPieces
   requested <- use requestedPieces
   
@@ -94,13 +99,25 @@ tryToRequestPiece pid = do
   
   let 
     endgame = length (t^.T.pieces) - S.size loaded < 10
-    
+    cached = storedPieces s
+
     candidates = 
       if endgame 
         then peerPieces `S.difference` (loaded `S.union` requestedPeerPieces)
-        else peerPieces `S.difference` (loaded `S.union` requested) 
+      else 
+        let 
+          available = peerPieces `S.difference` (loaded `S.union` requested)
+          priority = available `S.intersection` cached
+        in
+          if S.size priority > 0 
+            then priority
+            else available
+
+  assertM (S.size (loaded `S.intersection` cached) == 0)
+    (show loaded <> "\n" <> show cached) 
 
   when (S.size requestedPeerPieces < 20 && S.size candidates /= 0) $ do
+    
     selectedIdx <- zoom rng $ state $ randomR (0, S.size candidates - 1)
     let pieceIdx = S.elemAt selectedIdx candidates  
     requests <- do 
@@ -138,6 +155,9 @@ loader inMsg =
       p <- use peers
       peers %= (M.delete pid)
       requestedPieces %= (`S.difference` (p^.(ix pid).queuedPieces))      
+    
+    ConnectionFailed addr -> do
+      knownPeers %= (S.delete addr) 
 
     DhtPeers peers -> do
       knownPeers %= (<> S.fromList peers)
@@ -151,7 +171,7 @@ loader inMsg =
         _id = pid,
         _addr = addr,
         _rating = 0,
-        _choke = True,
+        _choked = True,
         _interested = False,
         _pieces = mempty,
         _queuedPieces = mempty 
@@ -171,9 +191,9 @@ loader inMsg =
         KeepAlive ->
           return ()
         Choke -> do
-          peers.(ix pid).choke .= True
+          peers.(ix pid).choked .= True
         UnChoke -> do
-          peers.(ix pid).choke .= False
+          peers.(ix pid).choked .= False
           tryToRequestPiece pid
             
         Interested -> do
@@ -185,37 +205,47 @@ loader inMsg =
             (S.fromList $ [index | (index, flag) <- zip [0 ..] flags, flag]) 
         Have piece ->
           peers.(ix pid).LoaderV2.pieces %= (S.insert piece)
+
         Request index offset length -> do
           when (length == subpieceLength) $ do
             tell $ [GetFs pid index offset length]
         
         Piece pieceIdx offset payload -> do
-          let 
-            offsetIsCorrect = offset `mod` subpieceLength == 0
-            sizeIsCorrect = B.length payload == fromIntegral subpieceLength
-            subpieceIdx = offset `div` subpieceLength 
-            subpiece = Subpiece pieceIdx subpieceIdx payload
+          loaded <- use loadedPieces
+          unless (pieceIdx `S.member` loaded) $ do
+            let 
+              offsetIsCorrect = offset `mod` subpieceLength == 0
+              sizeIsCorrect = B.length payload == fromIntegral subpieceLength
+              subpieceIdx = offset `div` subpieceLength 
+              subpiece = Subpiece pieceIdx subpieceIdx payload
 
-          when (offsetIsCorrect && sizeIsCorrect) $ do
-            outcome <- zoom storage (state $ store subpiece)
+            when (offsetIsCorrect && sizeIsCorrect) $ do
+              outcome <- zoom storage (state $ store subpiece)
 
-            case outcome of
-              Stored -> return ()
-              Failed -> do
-                requestedPieces %= (S.delete pieceIdx)
-                peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
+              case outcome of
+                Stored -> return ()
+                Failed -> do
+                  requestedPieces %= (S.delete pieceIdx)
+                  peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
+                  p <- use peers
+
+                  unless ((p M.! pid)^.choked) $ do
+                    tryToRequestPiece pid  
                 
-                tryToRequestPiece pid
-              
-              Finished piece -> do
-                tell [PieceLoaded (fromIntegral pieceIdx) piece]
-                
-                loadedPieces %= (S.insert pieceIdx)
-                requestedPieces %= (S.delete pieceIdx)
-                peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
-                
-                tryToRequestPiece pid
-                tryToRequestPiece pid
+                Finished piece -> do
+                  tell [PieceLoaded (fromIntegral pieceIdx) piece]
+                  p <- use peers
+
+                  let msg = Have pieceIdx
+                  tell $ map (\pid -> OutMessage pid msg) (M.keys p)
+
+                  loadedPieces %= (S.insert pieceIdx)
+                  requestedPieces %= (S.delete pieceIdx)
+                  peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
+
+                  unless ((p M.! pid)^.choked) $ do
+                    tryToRequestPiece pid  
+                    tryToRequestPiece pid
 
 run :: L a -> Loader -> (Loader, [Outgoing], a)
 run l state = (loader, events, a) where

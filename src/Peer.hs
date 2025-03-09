@@ -144,7 +144,8 @@ startPeer socket = do
       case x of
         1 -> killThread t2
         2 -> killThread t1
-        _ -> error "Invalid tread finished in Peer")
+        _ -> error "Invalid thread finished in Peer")
+
     (\_ -> do 
       STM.atomically $ STM.writeTChan outgoing Nothing
       S.close socket)

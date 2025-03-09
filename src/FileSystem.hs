@@ -41,19 +41,21 @@ check fs = do
 
     result <- forM [0 .. nPieces - 1] $ \index -> do
       let hash = (fs^.torrent.pieces) A.! index
-      let offset = index * (fromInteger $ fs^.torrent.pieceLength)
-      IO.hSeek handle IO.AbsoluteSeek (fromIntegral offset)
+      let offset = (toInteger index) * (fs^.torrent.pieceLength)
+      
+      IO.hSeek handle IO.AbsoluteSeek offset
       piece <- B.hGetSome handle (fromInteger $ fs^.torrent.pieceLength)
 
-      let flag = H.check piece hash
-      when flag $ do
+      let correct = H.check piece hash
+      
+      when correct $ do
         IORef.modifyIORef counterRef (+ 1)
 
       when (index `mod` 50 == 0) $ do
         counter <- IORef.readIORef counterRef
         putStr $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show index <> ")"
 
-      return $! (flag, index)
+      return $! (correct, index)
     
     counter <- IORef.readIORef counterRef
     putStrLn $ "\27[2\27[1G" <> "Checking (" <> show counter <> "/" <> show nPieces <> ")"
@@ -64,12 +66,11 @@ get index offset length fs = do
   IO.withFile (fs^.torrent.name) IO.ReadWriteMode $ \handle -> do
     let 
       hash = (fs^.torrent.pieces) A.! index
-      offset = index * (fromInteger $ fs^.torrent.pieceLength)
+      offset = (toInteger index) * (fs^.torrent.pieceLength)
     
-    IO.hSeek handle IO.AbsoluteSeek (fromIntegral offset)
+    IO.hSeek handle IO.AbsoluteSeek offset
     piece <- B.hGetSome handle (fromInteger $ fs^.torrent.pieceLength)
 
     return $ if H.check piece hash
       then Just (B.take (fromIntegral length) $ B.drop (fromIntegral offset) piece)
       else Nothing
-

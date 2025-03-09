@@ -13,7 +13,8 @@ module Storage (
   pieceIdx, 
   subpieceIdx,
   subpieceLength,
-  subpiecesInPiece
+  subpiecesInPiece,
+  storedPieces
 ) where
 
 import Torrent
@@ -22,6 +23,7 @@ import Hash
 import qualified Data.Array as A
 import qualified Data.ByteString as B
 import qualified Data.Map as M
+import qualified Data.Set as S
 
 import Control.Lens (set, makeLenses, (^.))
 import Data.Maybe (fromMaybe)
@@ -83,6 +85,5 @@ store subpiece storage =
   in
     (outcome, storage')
 
-  -- subpieceMap = M.findWithDefault mempty index pieceMap
-
-  -- piece = storage^..torrent.pieces.(ix 10) 
+storedPieces :: Storage -> S.Set Word32
+storedPieces storage = S.fromList $ M.keys $ storage^.mapping

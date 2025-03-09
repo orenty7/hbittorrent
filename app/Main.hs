@@ -145,19 +145,24 @@ main = do
 
         void $ forkIO $ do
           socket <- createTcp
-          NS.connect socket addr
 
-          let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
+          res <- try $ do
+            NS.connect socket addr
+            let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
+            performHandshake socket handshake
+            startPeer socket
 
-          performHandshake socket handshake
+          case res of
+            Left (e :: SomeException) -> 
+              STM.atomically $ do
+                STM.writeTChan loaderIn (V2.ConnectionFailed addr)
+            
+            Right (peerIn, peerOut) -> do 
+              STM.atomically $ do
+                STM.modifyTVar connectionsRef (M.insert pid (peerIn, peerOut))
 
-          (peerIn, peerOut) <- startPeer socket
-
-          STM.atomically $ do
-            STM.modifyTVar connectionsRef (M.insert pid (peerIn, peerOut))
-
-          STM.atomically $ do
-            STM.writeTChan loaderIn (V2.Connected pid addr)
+              STM.atomically $ do
+                STM.writeTChan loaderIn (V2.Connected pid addr)
 
       V2.PieceLoaded index piece -> do
         FS.store index piece filesystem
