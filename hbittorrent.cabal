@@ -29,7 +29,6 @@ library
       Dht
       FileSystem
       Hash
-      Loader
       LoaderV2
       Parser.Core
       Peer

@@ -10,12 +10,11 @@ module Main (main) where
 
 import Bencode (parse)
 import Dht (find)
-import Peer (Handshake (..), startPeer)
+import Peer (Handshake (..), performHandshake, startPeer)
 import Torrent
 import Utils (createTcp)
 
 import qualified FileSystem as FS
-import qualified Loader
 import qualified LoaderV2 as V2
 import qualified Tracker
 import qualified Hash as H
@@ -150,7 +149,7 @@ main = do
 
           let handshake = Handshake (replicate 64 False) (torrent^.infoHash) "asdfasdfasdfasdfasdf"
 
-          Loader.performHandshake socket handshake
+          performHandshake socket handshake
 
           (peerIn, peerOut) <- startPeer socket
 

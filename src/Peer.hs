@@ -8,12 +8,8 @@ module Peer (
   Handshake (..), 
   PeerState (..),
   
-  sendHandshake, 
-  receiveHandshake, 
-  sendMessage, 
-  receiveMessage, 
   runPeer,
-  communicate,
+  performHandshake,
   startPeer
 ) where
 
@@ -109,6 +105,11 @@ sendMessage message = do
 runPeer :: Peer a -> PeerState -> IO a
 runPeer action config = runReaderT action config
 
+performHandshake :: S.Socket -> Handshake -> IO Handshake
+performHandshake socket handshake = runPeer action (PeerState socket) where 
+  action = do
+    sendHandshake handshake
+    receiveHandshake
 
 startPeer :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan (Maybe PeerMessage))
 startPeer socket = do
@@ -149,35 +150,3 @@ startPeer socket = do
       S.close socket)
 
   return (incoming, outgoing)    
-    
-
--- program :: Peer ()
--- program = do
---   env <- ask
---   incoming <- liftIO $ STM.atomically STM.newTTChan
-
---   let receiver = forever $ do
---         msg <- receiveMessage
---         liftIO $ STM.atomically $ do
---           STM.writeTChan incoming msg
-
---   liftIO $ forkIO $ runPeer receiver env
-
---   return ()
-
-communicate :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan PeerMessage) 
-communicate socket = do
-  peerMessages <- STM.newTChanIO
-  masterMessages <- STM.newTChanIO
-
-  let runPeer action = runReaderT action (PeerState socket)
-
-  forkIO $ runPeer $ forever $ do
-    msg <- receiveMessage
-    liftIO $ STM.atomically $ STM.writeTChan peerMessages msg
- 
-  forkIO $ runPeer $ forever $ do
-    msg <- liftIO $ STM.atomically $ STM.readTChan masterMessages
-    sendMessage msg
-
-  return $ (peerMessages, masterMessages)
