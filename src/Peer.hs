@@ -18,14 +18,13 @@ module Peer (
   sendMessage, 
   receiveMessage, 
   runPeer,
-  communicate
+  communicate,
+  startPeer
 ) where
 
-import Parser.Core (Parser, expectByte, expectChar, nextN, runParser)
+import Parser.Core (runParser)
 import Protocols (MessageHeader (..), PeerMessage (..), Serializable (..), headerSize)
 import Protocols.Handshake
-
-import qualified Hash as H 
 
 import qualified Control.Concurrent.STM as STM
 import qualified Data.ByteString as B
@@ -33,14 +32,11 @@ import qualified Data.ByteString.Builder as B
 import qualified Network.Socket as S
 import qualified Network.Socket.ByteString as S
 
-
 import Control.Concurrent
 import Control.Lens
-import Control.Monad (forM_, replicateM, when, forever)
+import Control.Monad (when, forever)
 import Control.Monad.Reader
-import Control.Monad.State
 import Control.Monad.Writer
-import Data.Maybe (fromMaybe)
 
 import Prelude as P
 
@@ -117,6 +113,24 @@ sendMessage message = do
 runPeer :: Peer a -> PeerState -> IO a
 runPeer action config = runReaderT action config
 
+
+startPeer :: S.Socket -> IO (STM.TChan PeerMessage, STM.TChan PeerMessage)
+startPeer socket = do
+  let peer = PeerState socket
+
+  incoming <- STM.newTChanIO
+  outgoing <- STM.newTChanIO
+
+  forkIO $ forever $ do
+    msg <- STM.atomically $ STM.readTChan incoming 
+    runPeer (sendMessage msg) peer
+
+  forkIO $ forever $ do
+    msg <- runPeer receiveMessage peer 
+    STM.atomically $ STM.writeTChan outgoing msg
+
+  return (incoming, outgoing)    
+    
 
 -- program :: Peer ()
 -- program = do

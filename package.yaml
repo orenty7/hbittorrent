@@ -42,13 +42,13 @@ dependencies:
   - utf8-string
 ghc-options:
   - -Wall
+  - -Werror
+  - -Wcompat
   - -Wno-name-shadowing
   - -Wno-unused-do-bind
-  # - -Werror
-  - -Wcompat
+  - -Wno-unused-matches
+  - -Wno-unused-top-binds
   - -Widentities
-  - -Wincomplete-record-updates
-  - -Wincomplete-uni-patterns
   - -Wmissing-export-lists
   - -Wmissing-home-modules
   - -Wpartial-fields

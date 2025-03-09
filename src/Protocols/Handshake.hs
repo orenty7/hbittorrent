@@ -2,7 +2,10 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE GHC2021 #-}
 
-module Protocols.Handshake where
+module Protocols.Handshake (
+  Handshake (..),
+  handshakeSize
+) where
 
 import Parser.Core
 import Protocols.Serializable (Serializable (..), Serializer)
@@ -13,7 +16,6 @@ import qualified Data.ByteString.Builder as B
 
 
 import Control.Lens (makeLenses, view, (^.))
-import Control.Monad
 import Control.Monad.Writer
 
 

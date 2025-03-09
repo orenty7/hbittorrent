@@ -5,9 +5,9 @@ module LoaderV2 (
   startLoader,
   Incoming (..),
   Outgoing (..)
-  ) where
+) where
 
-import Torrent
+import qualified Torrent as T
 import Protocols (PeerMessage (..))
 import Storage
 
@@ -18,13 +18,13 @@ import qualified Data.Map as M
 import qualified Data.Set as S
 import qualified Network.Socket as NS
 
-
 import Control.Lens
 import Data.IORef
 import Data.Word
 import Control.Monad
 import Control.Monad.State
 import Control.Monad.Writer
+import System.Random
 
 type PeerId = Int
 data Peer = Peer 
@@ -34,16 +34,19 @@ data Peer = Peer
   , _choke :: Bool
   , _interested :: Bool
   , _pieces :: S.Set Word32
-  , _queuedSubpieces :: [Int]
+  , _queuedPieces :: S.Set Word32
   } deriving Show
 makeLenses ''Peer
 
 
 data Loader = Loader 
   { _storage :: Storage 
-  , _torrent :: Torrent
+  , _torrent :: T.Torrent
   , _peers :: M.Map PeerId Peer
   , _knownPeers :: S.Set NS.SockAddr
+  , _loadedPieces :: S.Set Word32
+  , _requestedPieces :: S.Set Word32
+  , _rng :: StdGen
   } deriving Show
 makeLenses ''Loader
 
@@ -53,6 +56,7 @@ data Incoming
   | Heartbeat
   | Connected PeerId NS.SockAddr 
   | DhtPeers [NS.SockAddr]
+  | TrackerPeers [NS.SockAddr]
   deriving Show
 
 data Outgoing 
@@ -60,19 +64,52 @@ data Outgoing
   | PieceLoaded Int B.ByteString
   | Connect NS.SockAddr
   | AskDhtPeers
+  | AnnounceTracker
   deriving Show
 
 type L = StateT Loader (Writer [Outgoing])
+
+buildPieceRequests :: Word32 -> L [PeerMessage]
+buildPieceRequests pieceIdx = do 
+  t <- use torrent 
+  let 
+    subpiecesCount = fromIntegral $ subpiecesInPiece t pieceIdx
+    
+    buildRequest subpieceIdx = 
+      Request pieceIdx (subpieceIdx * subpieceLength) subpieceLength  
+
+  return $ map buildRequest [0..subpiecesCount - 1]
+
+
+tryToRequestPiece :: PeerId -> L ()
+tryToRequestPiece pid = do
+  loaded <- use loadedPieces
+  requested <- use requestedPieces
+  
+  peerPieces <- use $ peers.(ix pid).pieces
+  requestedPeerPieces <- use $ peers.(ix pid).queuedPieces
+
+  let candidates = peerPieces `S.difference` (loaded `S.union` requested) 
+
+  when (S.size requestedPeerPieces < 20 && S.size candidates /= 0) $ do
+    selectedIdx <- zoom rng $ state $ randomR (0, S.size candidates - 1)
+    let pieceIdx = S.elemAt selectedIdx candidates  
+
+    requests <- buildPieceRequests pieceIdx
+    tell $ map (OutMessage pid) requests
+
+    requestedPieces %= (S.insert pieceIdx)
+    peers.(ix pid).queuedPieces %= (S.insert pieceIdx)
 
 loader :: Incoming -> L ()
 loader inMsg = 
   case inMsg of
     Heartbeat -> do
+      p <- use peers
       kp <- use knownPeers
       when (length kp < 10) $ do
-        tell [AskDhtPeers]
-      
-      p <- use peers      
+        tell [AskDhtPeers, AnnounceTracker]
+
       when (M.size p < 10) $ do
         let 
           candidates = S.toList $ S.difference kp (S.fromList $ map (view addr) $ M.elems p)
@@ -83,9 +120,14 @@ loader inMsg =
         knownPeers %= (`S.difference` S.fromList selected) 
 
     PeerDied pid -> do
+      peer <- use peers.(ix pid)
+
       peers %= (M.delete pid)
+      requestedPieces %= (`S.difference` $ peer^.queuedPieces)
 
     DhtPeers peers -> do
+      knownPeers %= (<> S.fromList peers)
+    TrackerPeers peers -> do
       knownPeers %= (<> S.fromList peers)
     
     Connected pid addr  -> do
@@ -96,11 +138,15 @@ loader inMsg =
         _choke = True,
         _interested = False,
         _pieces = mempty,
-        _queuedSubpieces = [] 
+        _queuedPieces = mempty 
       })
       
-      p <- use (torrent.Torrent.pieces)
-      tell $ [OutMessage pid $ BitField $ map (const False) $ A.elems p]
+      p <- use (torrent.T.pieces)
+      tell $ [
+          OutMessage pid $ BitField $ map (const False) $ A.elems p,
+          OutMessage pid $ UnChoke,
+          OutMessage pid $ Interested
+        ]
 
     InMessage pid msg ->
       case msg of
@@ -108,13 +154,15 @@ loader inMsg =
           return ()
         KeepAlive ->
           return ()
-        Choke ->
+        Choke -> do
           peers.(ix pid).choke .= True
-        UnChoke ->
+        UnChoke -> do
           peers.(ix pid).choke .= False
-        Interested ->
+          tryToRequestPiece pid
+            
+        Interested -> do
           peers.(ix pid).interested .= True
-        NotInterested ->
+        NotInterested -> do
           peers.(ix pid).interested .= False
         BitField flags -> do
           peers.(ix pid).LoaderV2.pieces .= 
@@ -125,61 +173,54 @@ loader inMsg =
           return ()
         Piece pieceIdx offset payload -> do
           let 
-            offsetIsCorrect = offset `mod` (fromIntegral subpieceLength) == 0
-            sizeIsCorrect = B.length payload == subpieceLength
-            subpieceIdx = (fromIntegral offset) `div` subpieceLength 
-            subpiece = Subpiece (fromIntegral pieceIdx) subpieceIdx payload
+            offsetIsCorrect = offset `mod` subpieceLength == 0
+            sizeIsCorrect = B.length payload == fromIntegral subpieceLength
+            subpieceIdx = offset `div` subpieceLength 
+            subpiece = Subpiece pieceIdx subpieceIdx payload
 
           when (offsetIsCorrect && sizeIsCorrect) $ do
             outcome <- zoom storage (state $ store subpiece)
 
             case outcome of
               Stored -> return ()
-              Failed -> return () 
-              Finished piece -> 
+              Failed -> do
+                requestedPieces %= (S.delete pieceIdx)
+                peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
+                
+                tryToRequestPiece pid
+              
+              Finished piece -> do
                 tell [PieceLoaded (fromIntegral pieceIdx) piece]
-
-            --   addSubpiece connection index offset subpiece
-            --   tryToBuildPiece connection index
-
-            -- case maybePiece of
-            --   Nothing -> return ()
-            --   Just piece -> do
-            --     finished <- STM.atomically $ do
-            --       STM.writeTChan (view events connection) $ Finished index
-            --       STM.modifyTVar (view globalState connection) (over finishedPieces (S.insert index))
-
-            --       state <- STM.readTVar (view globalState connection)
-            --       return $ S.size (view finishedPieces state)
-
-            --     writeIORef connectionRef (over queuedPieces (M.delete index) connection)
-
-            --     IO.withFile (view (torrent . name) connection) IO.ReadWriteMode $ \handle -> do
-            --       let offset = convert index * view (torrent . pieceLength) connection
-            --       IO.hSeek handle IO.AbsoluteSeek offset
-            --       B.hPut handle piece
-            --     let total =
-            --           length (view (torrent . Torrent.pieces) connection)
-            --     Loader.log connection $ "\27[2\27[1G" <> "Loading (" <> show finished <> "/" <> show total <> ")"
+                
+                requestedPieces %= (S.delete pieceIdx)
+                peers.(ix pid).queuedPieces %= (S.delete pieceIdx)                
+                
+                tryToRequestPiece pid
+                tryToRequestPiece pid
 
 run :: L a -> Loader -> (Loader, [Outgoing], a)
 run l state = (loader, events, a) where
   ((a, loader), events) = runWriter (runStateT l state) 
 
-startLoader :: Torrent -> STM.TChan Incoming -> STM.TChan Outgoing ->  IO ()
-startLoader torrent incoming outgoing = do
+startLoader :: T.Torrent -> S.Set Word32 -> STM.TChan Incoming -> STM.TChan Outgoing ->  IO ()
+startLoader torrent loaded incoming outgoing = do
   let storage = mkStorage torrent
+  rng <- getStdGen
   stateRef <- newIORef (Loader {
     _storage = storage,
     _torrent = torrent,
     _peers = mempty,
-    _knownPeers =  mempty
+    _knownPeers =  mempty,
+    _loadedPieces = loaded,
+    _requestedPieces = mempty,
+    _rng = rng
   })
 
   forever $ do
     inMsg <- STM.atomically $ STM.readTChan incoming
     state <- readIORef stateRef
     
+    -- putStrLn $ take 100 $ show inMsg
     let (state', events, ()) = run (loader inMsg) state
 
     writeIORef stateRef state' 

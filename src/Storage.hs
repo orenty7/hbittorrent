@@ -12,8 +12,9 @@ module Storage (
   Subpiece (..),
   pieceIdx, 
   subpieceIdx,
-  subpieceLength
-  ) where
+  subpieceLength,
+  subpiecesInPiece
+) where
 
 import Torrent
 import Hash
@@ -24,19 +25,20 @@ import qualified Data.Map as M
 
 import Control.Lens (set, makeLenses, (^.))
 import Data.Maybe (fromMaybe)
+import Data.Word
 
 data Storage = Storage 
-  { _mapping :: M.Map Int (M.Map Int B.ByteString)
+  { _mapping :: M.Map Word32 (M.Map Word32 B.ByteString)
   , _torrent :: Torrent
   } deriving Show
 makeLenses ''Storage
 
-subpieceLength :: Int
-subpieceLength = 2^(14 :: Int)
+subpieceLength :: Word32
+subpieceLength = 2^(14 :: Word32)
 
 data Subpiece = Subpiece 
-  { _pieceIdx :: Int
-  , _subpieceIdx :: Int
+  { _pieceIdx :: Word32
+  , _subpieceIdx :: Word32
   , _payload :: B.ByteString } deriving Show
 makeLenses ''Subpiece
 
@@ -50,6 +52,11 @@ data Outcome
 mkStorage :: Torrent -> Storage
 mkStorage torrent = Storage mempty torrent
 
+subpiecesInPiece :: Torrent -> Word32 -> Int
+subpiecesInPiece torrent pieceIndex = 
+  ceiling @Double (fromIntegral thisPieceLength / fromIntegral subpieceLength) where
+    thisPieceLength = nthPieceLength torrent (fromIntegral pieceIndex)
+
 store :: Subpiece -> Storage -> (Outcome, Storage)
 store subpiece storage = 
   let 
@@ -57,16 +64,8 @@ store subpiece storage =
     subpiecesMap = fromMaybe mempty (M.lookup (subpiece^.pieceIdx) piecesMap)
     subpiecesMap' = M.insert (subpiece^.subpieceIdx) (subpiece^.payload) subpiecesMap 
     
-    nSubpieces = 
-      let 
-        isLast = length (storage^.torrent.pieces) == (subpiece^.pieceIdx) 
-        thisPieceLength = 
-          if isLast 
-          then (storage^.torrent.fileLength) `mod` (storage^.torrent.pieceLength)
-          else (storage^.torrent.pieceLength)
-      in
-        ceiling (fromIntegral thisPieceLength / fromIntegral subpieceLength)
-
+    nSubpieces = subpiecesInPiece (storage^.torrent) (subpiece^.pieceIdx)
+      
     (outcome, piecesMap') = 
       case M.size subpiecesMap' == nSubpieces of
         False -> (Stored, M.insert (subpiece^.pieceIdx) subpiecesMap' piecesMap)

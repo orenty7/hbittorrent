@@ -13,6 +13,7 @@ module Torrent (
   infoHash,
   --
   mkTorrent,
+  nthPieceLength
 ) where
 
 import Bencode (Bencode (..), encode, _BDict, _BInteger, _BList, _BString)
@@ -26,6 +27,7 @@ import Control.Lens
 import Control.Monad ((>=>))
 import Data.Maybe (mapMaybe)
 import Data.Text.Encoding (decodeUtf8')
+import Data.Word
 import Text.URI (URI, mkURI)
 import Prelude as P
 
@@ -33,7 +35,7 @@ data Torrent = Torrent
   { _announce :: Maybe (Either URI [[URI]])
   , _name :: String
   , _pieceLength :: Integer
-  , _pieces :: A.Array Int H.Hash
+  , _pieces :: A.Array Word32 H.Hash
   , _fileLength :: Integer
   , _urlList :: Maybe [URI]
   , _infoHash :: H.Hash
@@ -53,6 +55,7 @@ splitPieces bstr
   | B.null bstr = []
   | B.length bstr >= 20 = (H.mkHash $ B.take 20 bstr):splitPieces (B.drop 20 bstr)
   | otherwise = error "Incorrect hash length"
+
 
 mkTorrent :: Bencode -> Maybe Torrent
 mkTorrent bencode = do
@@ -87,7 +90,16 @@ mkTorrent bencode = do
       (if P.null announceList then Left <$> announce else Just (Right announceList))
       (T.unpack name)
       pieceLength
-      (A.listArray (0, length pieces - 1) pieces) 
+      (A.listArray (0, fromIntegral $ length pieces - 1) pieces) 
       fileLength
       parsedUrlList
       hash
+
+nthPieceLength :: Torrent -> Int -> Integer
+nthPieceLength torrent index = 
+  let
+    isLast = length (torrent^.pieces) == index 
+  in
+    if isLast 
+    then (torrent^.fileLength) `mod` (torrent^.pieceLength)
+    else (torrent^.pieceLength)
