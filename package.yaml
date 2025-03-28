@@ -48,12 +48,14 @@ ghc-options:
   - -Wno-unused-do-bind
   - -Wno-unused-matches
   - -Wno-unused-top-binds
+  - -Wno-partial-fields
   - -Widentities
   - -Wmissing-export-lists
   - -Wmissing-home-modules
   - -Wpartial-fields
   - -Wredundant-constraints
 
+language: GHC2024
 library:
   source-dirs: src
 

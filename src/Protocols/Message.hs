@@ -1,9 +1,3 @@
-{-# LANGUAGE GHC2021 #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE InstanceSigs #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-
 module Protocols.Message (MessageHeader (..), headerSize) where
 
 import Protocols.Serializable (Serializable (parse, serialize))

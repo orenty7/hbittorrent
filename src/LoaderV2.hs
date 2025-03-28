@@ -1,6 +1,4 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GHC2021 #-}
-{-# LANGUAGE PartialTypeSignatures #-}
 
 module LoaderV2 (
   startLoader,

@@ -1,9 +1,5 @@
-{-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GHC2021 #-}
---
-{-# OPTIONS_GHC -Wno-unused-top-binds #-}
 
 module Dht (find) where
 

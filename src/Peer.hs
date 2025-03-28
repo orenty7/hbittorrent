@@ -1,9 +1,4 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE GHC2021 #-}
-
---
-{-# OPTIONS_GHC -Wno-partial-fields #-}
-
 module Peer (
   Handshake (..), 
   PeerState (..),

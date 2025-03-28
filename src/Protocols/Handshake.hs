@@ -1,6 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE GHC2021 #-}
 
 module Protocols.Handshake (
   Handshake (..),

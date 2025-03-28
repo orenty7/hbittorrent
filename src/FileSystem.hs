@@ -1,7 +1,4 @@
 {-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE RecordWildCards #-}
-{-# LANGUAGE GHC2021 #-}
-
 module FileSystem (FileSystem, mkFileSystem, get, store, check) where
 
 import Torrent

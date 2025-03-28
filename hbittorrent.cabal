@@ -70,7 +70,7 @@ library
     , text
     , transformers
     , utf8-string
-  default-language: Haskell2010
+  default-language: GHC2024
 
 executable hbittorrent-exe
   main-is: Main.hs
@@ -103,7 +103,7 @@ executable hbittorrent-exe
     , text
     , transformers
     , utf8-string
-  default-language: Haskell2010
+  default-language: GHC2024
 
 test-suite hbittorrent-test
   type: exitcode-stdio-1.0
@@ -137,4 +137,4 @@ test-suite hbittorrent-test
     , text
     , transformers
     , utf8-string
-  default-language: Haskell2010
+  default-language: GHC2024
