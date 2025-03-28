@@ -1,5 +1,4 @@
 {-# LANGUAGE NoFieldSelectors #-}
-
 module Protocols.Core.Message (PeerMessage (..)) where
 
 import Protocols.Serializable (Serializable (..), Serializer)

@@ -13,10 +13,8 @@ import qualified Hash as H
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Builder as B
 
-
 import Control.Lens (makeLenses, view, (^.))
 import Control.Monad.Writer
-
 
 data Handshake = Handshake
   { _extensionFlags :: [Bool]
@@ -28,7 +26,7 @@ makeLenses ''Handshake
 
 
 handshakeBytes :: B.ByteString
-handshakeBytes = B.pack $ (19 :) $ B.unpack "BitTorrent protocol"
+handshakeBytes = B.cons 19 "BitTorrent protocol"
 
 handshakeSize :: Int
 handshakeSize = 1 + 19 + 8 + 20 + 20

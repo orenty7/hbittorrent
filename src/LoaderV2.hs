@@ -78,13 +78,6 @@ type L = StateT Loader (Writer [Outgoing])
 
 batchSize :: Int 
 batchSize = 3
-{-
-for(let i = 0; i < arr.length; i ++) {
-  swap(arr[i], random(i, arr.length));
-}
-
--} 
-
 
 shuffle :: forall a. Ord a => [a] -> L [a] 
 shuffle x = do
