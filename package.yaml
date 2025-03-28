@@ -52,7 +52,6 @@ ghc-options:
   - -Widentities
   - -Wmissing-export-lists
   - -Wmissing-home-modules
-  - -Wpartial-fields
   - -Wredundant-constraints
 
 language: GHC2024
