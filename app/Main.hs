@@ -121,12 +121,12 @@ main = do
       V2.AnnounceTracker -> do
         void $ forkIO $ do 
           peers <- getAnnouncePeers 
-          STM.atomically $ STM.writeTChan loaderIn $ V2.DhtPeers peers
+          STM.atomically $ STM.writeTChan loaderIn $ V2.TrackerPeers peers
         
       V2.AskDhtPeers -> do
         void $ forkIO $ do 
           peers <- getDhtPeers 
-          STM.atomically $ STM.writeTChan loaderIn $ V2.TrackerPeers peers
+          STM.atomically $ STM.writeTChan loaderIn $ V2.DhtPeers peers
       
       V2.Connect addr -> do
         pid <- IORef.readIORef counterRef 
@@ -180,5 +180,5 @@ main = do
         connections <- STM.atomically $ STM.readTVar connectionsRef
         
         case M.lookup pid connections of
-          Nothing -> return ()
+          Nothing -> printPar $ "Message to the dead peer: " <> show pid
           Just (peerIn, peerOut) -> STM.atomically $ STM.writeTChan peerIn msg 

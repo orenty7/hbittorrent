@@ -8,13 +8,15 @@ module Storage (
   Outcome (..), 
   mkStorage,
   store,
+  mapping,
   
   Subpiece (..),
   pieceIdx, 
   subpieceIdx,
   subpieceLength,
   subpiecesInPiece,
-  storedPieces
+  storedPieces,
+  storedSubpieces
 ) where
 
 import Torrent
@@ -41,7 +43,7 @@ subpieceLength = 2^(14 :: Word32)
 data Subpiece = Subpiece 
   { _pieceIdx :: Word32
   , _subpieceIdx :: Word32
-  , _payload :: B.ByteString } deriving Show
+  } deriving (Eq, Ord, Show)
 makeLenses ''Subpiece
 
 
@@ -59,12 +61,12 @@ subpiecesInPiece torrent pieceIndex =
   ceiling @Double (fromIntegral thisPieceLength / fromIntegral subpieceLength) where
     thisPieceLength = nthPieceLength torrent (fromIntegral pieceIndex)
 
-store :: Subpiece -> Storage -> (Outcome, Storage)
-store subpiece storage = 
+store :: Subpiece -> B.ByteString -> Storage -> (Outcome, Storage)
+store subpiece payload storage = 
   let 
     piecesMap = storage^.mapping
     subpiecesMap = fromMaybe mempty (M.lookup (subpiece^.pieceIdx) piecesMap)
-    subpiecesMap' = M.insert (subpiece^.subpieceIdx) (subpiece^.payload) subpiecesMap 
+    subpiecesMap' = M.insert (subpiece^.subpieceIdx) payload subpiecesMap 
     
     nSubpieces = subpiecesInPiece (storage^.torrent) (subpiece^.pieceIdx)
       
@@ -87,3 +89,9 @@ store subpiece storage =
 
 storedPieces :: Storage -> S.Set Word32
 storedPieces storage = S.fromList $ M.keys $ storage^.mapping
+
+storedSubpieces :: Word32 -> Storage -> S.Set Word32
+storedSubpieces pieceIdx storage = 
+  case M.lookup pieceIdx (storage^.mapping) of
+    Just subpieceMap -> S.fromList $ M.keys $ subpieceMap
+    Nothing -> mempty 
