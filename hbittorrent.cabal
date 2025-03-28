@@ -30,6 +30,7 @@ library
       FileSystem
       Hash
       LoaderV2
+      Logger
       Parser.Core
       Peer
       Protocols
